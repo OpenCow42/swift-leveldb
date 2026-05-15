@@ -144,6 +144,20 @@ public final class Database {
         }
     }
 
+    public struct KeyRange: Equatable, Sendable {
+        public var start: Data
+        public var limit: Data
+
+        public init(start: Data, limit: Data) {
+            self.start = start
+            self.limit = limit
+        }
+
+        public init(start: String, limit: String) {
+            self.init(start: Data(start.utf8), limit: Data(limit.utf8))
+        }
+    }
+
     public final class Snapshot: @unchecked Sendable {
         private let database: Database
         fileprivate let handle: OpaquePointer
@@ -245,27 +259,8 @@ public final class Database {
     }
 
     public init(path: String, options: OpenOptions) throws {
-        let rawOptions = leveldb_options_create()
+        let rawOptions = Self.makeOpenOptions(options)
         defer { leveldb_options_destroy(rawOptions) }
-
-        leveldb_options_set_create_if_missing(rawOptions, options.createIfMissing.levelDBBool)
-        leveldb_options_set_error_if_exists(rawOptions, options.errorIfExists.levelDBBool)
-        leveldb_options_set_paranoid_checks(rawOptions, options.paranoidChecks.levelDBBool)
-        if let writeBufferSize = options.writeBufferSize {
-            leveldb_options_set_write_buffer_size(rawOptions, writeBufferSize)
-        }
-        if let maxOpenFiles = options.maxOpenFiles {
-            leveldb_options_set_max_open_files(rawOptions, Int32(maxOpenFiles))
-        }
-        if let blockSize = options.blockSize {
-            leveldb_options_set_block_size(rawOptions, blockSize)
-        }
-        if let blockRestartInterval = options.blockRestartInterval {
-            leveldb_options_set_block_restart_interval(rawOptions, Int32(blockRestartInterval))
-        }
-        if let maxFileSize = options.maxFileSize {
-            leveldb_options_set_max_file_size(rawOptions, maxFileSize)
-        }
 
         var error: UnsafeMutablePointer<CChar>?
         let database = path.withCString { pathPointer in
@@ -426,6 +421,134 @@ public final class Database {
         iterator(readOptions: readOptions)
     }
 
+    public func property(_ name: String) -> String? {
+        let value = name.withCString { namePointer in
+            leveldb_property_value(handle, namePointer)
+        }
+        defer {
+            if let value {
+                leveldb_free(value)
+            }
+        }
+
+        guard let value else {
+            return nil
+        }
+
+        return String(cString: value)
+    }
+
+    public func approximateSize(of range: KeyRange) -> UInt64 {
+        approximateSizes(of: [range])[0]
+    }
+
+    public func approximateSizes(of ranges: [KeyRange]) -> [UInt64] {
+        guard !ranges.isEmpty else {
+            return []
+        }
+
+        let preparedStarts = ranges.map { Self.copyLevelDBBytes($0.start) }
+        let preparedLimits = ranges.map { Self.copyLevelDBBytes($0.limit) }
+        defer {
+            preparedStarts.forEach { $0.pointer.deallocate() }
+            preparedLimits.forEach { $0.pointer.deallocate() }
+        }
+
+        var startPointers: [UnsafePointer<CChar>?] = preparedStarts.map { UnsafePointer($0.pointer) }
+        var startLengths = preparedStarts.map(\.count)
+        var limitPointers: [UnsafePointer<CChar>?] = preparedLimits.map { UnsafePointer($0.pointer) }
+        var limitLengths = preparedLimits.map(\.count)
+        var sizes = Array(repeating: UInt64(0), count: ranges.count)
+
+        startPointers.withUnsafeMutableBufferPointer { startPointersBuffer in
+            startLengths.withUnsafeMutableBufferPointer { startLengthsBuffer in
+                limitPointers.withUnsafeMutableBufferPointer { limitPointersBuffer in
+                    limitLengths.withUnsafeMutableBufferPointer { limitLengthsBuffer in
+                        sizes.withUnsafeMutableBufferPointer { sizesBuffer in
+                            leveldb_approximate_sizes(
+                                handle,
+                                Int32(ranges.count),
+                                startPointersBuffer.baseAddress,
+                                startLengthsBuffer.baseAddress,
+                                limitPointersBuffer.baseAddress,
+                                limitLengthsBuffer.baseAddress,
+                                sizesBuffer.baseAddress
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        return sizes
+    }
+
+    public func compactRange(start: Data? = nil, limit: Data? = nil) {
+        withOptionalLevelDBBytes(start) { startPointer, startCount in
+            withOptionalLevelDBBytes(limit) { limitPointer, limitCount in
+                leveldb_compact_range(handle, startPointer, startCount, limitPointer, limitCount)
+            }
+        }
+    }
+
+    public func compactRange(start: String?, limit: String?) {
+        compactRange(
+            start: start.map { Data($0.utf8) },
+            limit: limit.map { Data($0.utf8) }
+        )
+    }
+
+    public static func destroy(path: String, options: OpenOptions = .default) throws {
+        let rawOptions = makeOpenOptions(options)
+        defer { leveldb_options_destroy(rawOptions) }
+
+        var error: UnsafeMutablePointer<CChar>?
+        path.withCString { pathPointer in
+            leveldb_destroy_db(rawOptions, pathPointer, &error)
+        }
+
+        if let error {
+            throw LevelDBError.operationFailed(consume(error))
+        }
+    }
+
+    public static func repair(path: String, options: OpenOptions = .default) throws {
+        let rawOptions = makeOpenOptions(options)
+        defer { leveldb_options_destroy(rawOptions) }
+
+        var error: UnsafeMutablePointer<CChar>?
+        path.withCString { pathPointer in
+            leveldb_repair_db(rawOptions, pathPointer, &error)
+        }
+
+        if let error {
+            throw LevelDBError.operationFailed(consume(error))
+        }
+    }
+
+    private static func makeOpenOptions(_ options: OpenOptions) -> OpaquePointer {
+        let rawOptions = leveldb_options_create()!
+        leveldb_options_set_create_if_missing(rawOptions, options.createIfMissing.levelDBBool)
+        leveldb_options_set_error_if_exists(rawOptions, options.errorIfExists.levelDBBool)
+        leveldb_options_set_paranoid_checks(rawOptions, options.paranoidChecks.levelDBBool)
+        if let writeBufferSize = options.writeBufferSize {
+            leveldb_options_set_write_buffer_size(rawOptions, writeBufferSize)
+        }
+        if let maxOpenFiles = options.maxOpenFiles {
+            leveldb_options_set_max_open_files(rawOptions, Int32(maxOpenFiles))
+        }
+        if let blockSize = options.blockSize {
+            leveldb_options_set_block_size(rawOptions, blockSize)
+        }
+        if let blockRestartInterval = options.blockRestartInterval {
+            leveldb_options_set_block_restart_interval(rawOptions, Int32(blockRestartInterval))
+        }
+        if let maxFileSize = options.maxFileSize {
+            leveldb_options_set_max_file_size(rawOptions, maxFileSize)
+        }
+        return rawOptions
+    }
+
     private static func makeReadOptions(_ options: ReadOptions) -> OpaquePointer {
         let rawOptions = leveldb_readoptions_create()!
         leveldb_readoptions_set_verify_checksums(
@@ -443,6 +566,33 @@ public final class Database {
         let message = String(cString: error)
         leveldb_free(error)
         return message
+    }
+
+    private static func copyLevelDBBytes(_ data: Data) -> (pointer: UnsafeMutablePointer<CChar>, count: Int) {
+        let count = data.count
+        let pointer = UnsafeMutablePointer<CChar>.allocate(capacity: max(count, 1))
+        if count > 0 {
+            data.withUnsafeBytes { buffer in
+                pointer.initialize(
+                    from: buffer.baseAddress!.assumingMemoryBound(to: CChar.self),
+                    count: count
+                )
+            }
+        } else {
+            pointer.initialize(to: 0)
+        }
+        return (pointer, count)
+    }
+
+    private func withOptionalLevelDBBytes<Result>(
+        _ data: Data?,
+        _ body: (UnsafePointer<CChar>?, Int) throws -> Result
+    ) rethrows -> Result {
+        guard let data else {
+            return try body(nil, 0)
+        }
+
+        return try data.withLevelDBBytes(body)
     }
 }
 

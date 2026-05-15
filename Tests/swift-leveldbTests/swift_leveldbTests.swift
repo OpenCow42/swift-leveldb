@@ -174,3 +174,86 @@ private func temporaryDatabaseDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")
 }
+
+@Test func knownPropertyReturnsValueAndUnknownPropertyReturnsNil() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    let fileCount = database.property("leveldb.num-files-at-level0")
+    #expect(fileCount.flatMap(Int.init) != nil)
+    #expect(database.property("leveldb.not-a-real-property") == nil)
+}
+
+@Test func approximateSizesReturnValuesForSingleAndMultipleRangesIncludingEmptyKeys() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    try database.put(Data("empty-key-value".utf8), forKey: Data())
+    try database.put("value-a", forKey: "a")
+    try database.put("value-b", forKey: "b")
+
+    let size = database.approximateSize(of: Database.KeyRange(start: Data(), limit: Data("z".utf8)))
+    let sizes = database.approximateSizes(of: [
+        Database.KeyRange(start: Data(), limit: Data("a".utf8)),
+        Database.KeyRange(start: Data("a".utf8), limit: Data("z".utf8)),
+    ])
+
+    #expect(size >= 0)
+    #expect(sizes.count == 2)
+    #expect(sizes.allSatisfy { $0 >= 0 })
+}
+
+@Test func compactRangeCompletesWithoutDataLoss() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    try database.put("value-a", forKey: "a")
+    try database.put("value-b", forKey: "b")
+    try database.put(Data("empty-key-value".utf8), forKey: Data())
+
+    database.compactRange(start: Data(), limit: Data("z".utf8))
+    database.compactRange(start: Optional<Data>.none, limit: Optional<Data>.none)
+
+    #expect(try database.string(forKey: "a") == "value-a")
+    #expect(try database.string(forKey: "b") == "value-b")
+    #expect(try database.get(Data()).map { String(decoding: $0, as: UTF8.self) } == "empty-key-value")
+}
+
+@Test func destroyRemovesDatabaseSoReopenWithoutCreateFails() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    var database: Database? = try Database(path: directory.path)
+    try database?.put("value", forKey: "key")
+    database = nil
+
+    try Database.destroy(path: directory.path)
+
+    do {
+        _ = try Database(
+            path: directory.path,
+            options: Database.OpenOptions(createIfMissing: false)
+        )
+        Issue.record("Expected opening a destroyed database without createIfMissing to fail")
+    } catch LevelDBError.openFailed {
+        // Expected.
+    }
+}
+
+@Test func repairCanRunOnExistingDatabasePath() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    var database: Database? = try Database(path: directory.path)
+    try database?.put("value", forKey: "key")
+    database = nil
+
+    try Database.repair(path: directory.path)
+
+    let repaired = try Database(
+        path: directory.path,
+        options: Database.OpenOptions(createIfMissing: false)
+    )
+    #expect(try repaired.string(forKey: "key") == "value")
+}
