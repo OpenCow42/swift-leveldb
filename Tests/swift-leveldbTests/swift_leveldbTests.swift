@@ -1,8 +1,23 @@
+import Foundation
 import Testing
 @testable import swift_leveldb
 
-@Test func example() async throws {
-    // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-    // Swift Testing Documentation
-    // https://developer.apple.com/documentation/testing
+@Test func exposesVendoredLevelDBVersion() {
+    #expect(LevelDB.version == LevelDBVersion(major: 1, minor: 23))
+}
+
+@Test func storesReadsAndDeletesDataThroughCInterop() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let database = try Database(path: directory.path)
+
+    try database.put("value", forKey: "key")
+    #expect(try database.string(forKey: "key") == "value")
+
+    try database.deleteValue(forKey: "key")
+    #expect(try database.string(forKey: "key") == nil)
 }
