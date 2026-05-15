@@ -33,6 +33,11 @@ public enum LevelDBError: Error, Equatable, CustomStringConvertible {
 }
 
 public final class WriteBatch {
+    public enum Operation: Equatable, Sendable {
+        case put(key: Data, value: Data)
+        case delete(key: Data)
+    }
+
     fileprivate let handle: OpaquePointer
 
     public init() {
@@ -74,6 +79,52 @@ public final class WriteBatch {
     public func clear() {
         leveldb_writebatch_clear(handle)
     }
+
+    public func append(_ batch: WriteBatch) {
+        leveldb_writebatch_append(handle, batch.handle)
+    }
+
+    public func operations() -> [Operation] {
+        let state = WriteBatchIterationState()
+        let retainedState = Unmanaged.passRetained(state)
+        defer { retainedState.release() }
+
+        leveldb_writebatch_iterate(
+            handle,
+            retainedState.toOpaque(),
+            { statePointer, keyPointer, keyCount, valuePointer, valueCount in
+                guard let statePointer, let keyPointer, let valuePointer else {
+                    return
+                }
+
+                let state = Unmanaged<WriteBatchIterationState>
+                    .fromOpaque(statePointer)
+                    .takeUnretainedValue()
+                state.operations.append(.put(
+                    key: Data(bytes: keyPointer, count: keyCount),
+                    value: Data(bytes: valuePointer, count: valueCount)
+                ))
+            },
+            { statePointer, keyPointer, keyCount in
+                guard let statePointer, let keyPointer else {
+                    return
+                }
+
+                let state = Unmanaged<WriteBatchIterationState>
+                    .fromOpaque(statePointer)
+                    .takeUnretainedValue()
+                state.operations.append(.delete(
+                    key: Data(bytes: keyPointer, count: keyCount)
+                ))
+            }
+        )
+
+        return state.operations
+    }
+}
+
+private final class WriteBatchIterationState {
+    var operations: [WriteBatch.Operation] = []
 }
 
 public final class Database {

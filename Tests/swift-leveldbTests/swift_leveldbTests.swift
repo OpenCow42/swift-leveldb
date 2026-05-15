@@ -42,6 +42,40 @@ import Testing
     #expect(try database.string(forKey: "index:users_by_country:FR:123") == "")
 }
 
+@Test func appendingWriteBatchesAppliesBothSetsOfWrites() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    let first = WriteBatch()
+    first.put("first", forKey: "a")
+    first.put("replace-me", forKey: "b")
+
+    let second = WriteBatch()
+    second.put("second", forKey: "c")
+    second.deleteValue(forKey: "b")
+
+    first.append(second)
+    try database.write(first)
+
+    #expect(try database.string(forKey: "a") == "first")
+    #expect(try database.string(forKey: "b") == nil)
+    #expect(try database.string(forKey: "c") == "second")
+}
+
+@Test func writeBatchOperationsReturnsPutsAndDeletesInOrder() {
+    let batch = WriteBatch()
+    batch.put("one", forKey: "a")
+    batch.deleteValue(forKey: "b")
+    batch.put(Data([0x00, 0x01]), forKey: Data([0xff]))
+
+    #expect(batch.operations() == [
+        .put(key: Data("a".utf8), value: Data("one".utf8)),
+        .delete(key: Data("b".utf8)),
+        .put(key: Data([0xff]), value: Data([0x00, 0x01])),
+    ])
+}
+
 @Test func iteratorScansForwardInBytewiseOrder() throws {
     let directory = temporaryDatabaseDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
