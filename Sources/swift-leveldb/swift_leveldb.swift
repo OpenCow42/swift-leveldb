@@ -127,6 +127,27 @@ private final class WriteBatchIterationState {
     var operations: [WriteBatch.Operation] = []
 }
 
+private final class ComparatorState {
+    let compare: @Sendable (Data, Data) -> ComparisonResult
+    let namePointer: UnsafeMutablePointer<CChar>
+    let nameCount: Int
+
+    init(name: String, compare: @escaping @Sendable (Data, Data) -> ComparisonResult) {
+        self.compare = compare
+        let nameBytes = name.utf8CString
+        nameCount = nameBytes.count
+        namePointer = UnsafeMutablePointer<CChar>.allocate(capacity: nameCount)
+        nameBytes.withUnsafeBufferPointer { buffer in
+            namePointer.initialize(from: buffer.baseAddress!, count: buffer.count)
+        }
+    }
+
+    deinit {
+        namePointer.deinitialize(count: nameCount)
+        namePointer.deallocate()
+    }
+}
+
 public final class Database {
     public struct OpenOptions: Equatable, Sendable {
         public enum Compression: Equatable, Sendable {
@@ -147,6 +168,7 @@ public final class Database {
         public var compression: Compression?
         public var cache: Cache?
         public var filterPolicy: FilterPolicy?
+        public var comparator: Comparator?
 
         public init(
             createIfMissing: Bool = true,
@@ -159,7 +181,8 @@ public final class Database {
             maxFileSize: Int? = nil,
             compression: Compression? = nil,
             cache: Cache? = nil,
-            filterPolicy: FilterPolicy? = nil
+            filterPolicy: FilterPolicy? = nil,
+            comparator: Comparator? = nil
         ) {
             self.createIfMissing = createIfMissing
             self.errorIfExists = errorIfExists
@@ -172,6 +195,73 @@ public final class Database {
             self.compression = compression
             self.cache = cache
             self.filterPolicy = filterPolicy
+            self.comparator = comparator
+        }
+    }
+
+    public final class Comparator: @unchecked Sendable, Equatable {
+        public let name: String
+        fileprivate let handle: OpaquePointer
+
+        private init(name: String, handle: OpaquePointer) {
+            self.name = name
+            self.handle = handle
+        }
+
+        deinit {
+            leveldb_comparator_destroy(handle)
+        }
+
+        /// Creates a custom LevelDB comparator.
+        ///
+        /// The comparator name and ordering are persisted compatibility contract for a database.
+        /// Reopen a database only with the same name and identical ordering behavior; LevelDB treats
+        /// incompatible comparator behavior for existing data as unsafe.
+        public static func custom(
+            name: String,
+            compare: @escaping @Sendable (Data, Data) -> ComparisonResult
+        ) -> Comparator {
+            precondition(!name.isEmpty, "LevelDB comparator names must be stable and non-empty.")
+
+            let state = ComparatorState(name: name, compare: compare)
+            let retainedState = Unmanaged.passRetained(state)
+            let handle = leveldb_comparator_create(
+                retainedState.toOpaque(),
+                { statePointer in
+                    guard let statePointer else { return }
+                    Unmanaged<ComparatorState>.fromOpaque(statePointer).release()
+                },
+                { statePointer, lhsPointer, lhsCount, rhsPointer, rhsCount in
+                    guard let statePointer else { return 0 }
+                    let state = Unmanaged<ComparatorState>
+                        .fromOpaque(statePointer)
+                        .takeUnretainedValue()
+                    let lhs = lhsPointer.map { Data(bytes: $0, count: lhsCount) } ?? Data()
+                    let rhs = rhsPointer.map { Data(bytes: $0, count: rhsCount) } ?? Data()
+
+                    switch state.compare(lhs, rhs) {
+                    case .orderedAscending:
+                        return -1
+                    case .orderedSame:
+                        return 0
+                    case .orderedDescending:
+                        return 1
+                    }
+                },
+                { statePointer in
+                    guard let statePointer else { return nil }
+                    let state = Unmanaged<ComparatorState>
+                        .fromOpaque(statePointer)
+                        .takeUnretainedValue()
+                    return UnsafePointer(state.namePointer)
+                }
+            )!
+
+            return Comparator(name: name, handle: handle)
+        }
+
+        public static func == (lhs: Comparator, rhs: Comparator) -> Bool {
+            lhs.name == rhs.name
         }
     }
 
@@ -679,6 +769,10 @@ public final class Database {
         if let filterPolicy = options.filterPolicy {
             leveldb_options_set_filter_policy(rawOptions, filterPolicy.handle)
             resources.append(filterPolicy)
+        }
+        if let comparator = options.comparator {
+            leveldb_options_set_comparator(rawOptions, comparator.handle)
+            resources.append(comparator)
         }
         return (rawOptions, resources)
     }

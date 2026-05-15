@@ -316,6 +316,71 @@ private func temporaryDatabaseDirectory() -> URL {
     )
 }
 
+@Test func customComparatorControlsIterationOrder() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(
+        path: directory.path,
+        options: Database.OpenOptions(comparator: .custom(name: "swift-leveldb.reverse-bytewise") { lhs, rhs in
+            reverseBytewiseCompare(lhs, rhs)
+        })
+    )
+
+    try database.put("2", forKey: "b")
+    try database.put("1", forKey: "a")
+    try database.put("3", forKey: "c")
+
+    #expect(try collectKeys(database) == ["c", "b", "a"])
+}
+
+@Test func customComparatorCanReopenDatabaseWithSameComparator() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let comparator = Database.Comparator.custom(name: "swift-leveldb.reverse-bytewise") { lhs, rhs in
+        reverseBytewiseCompare(lhs, rhs)
+    }
+
+    do {
+        let database = try Database(
+            path: directory.path,
+            options: Database.OpenOptions(comparator: comparator)
+        )
+        try database.put("2", forKey: "b")
+        try database.put("1", forKey: "a")
+        try database.put("3", forKey: "c")
+    }
+
+    // LevelDB requires the same comparator name and ordering when reopening existing data;
+    // changing comparator behavior for a populated database is unsafe and not enforced here.
+    let reopened = try Database(
+        path: directory.path,
+        options: Database.OpenOptions(createIfMissing: false, comparator: comparator)
+    )
+    #expect(try collectKeys(reopened) == ["c", "b", "a"])
+    #expect(try reopened.string(forKey: "b") == "2")
+}
+
+@Test func customComparatorCallbackStateStaysAliveForDatabaseLifetime() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database: Database = try {
+        let comparator = Database.Comparator.custom(name: "swift-leveldb.reverse-bytewise") { lhs, rhs in
+            reverseBytewiseCompare(lhs, rhs)
+        }
+        return try Database(
+            path: directory.path,
+            options: Database.OpenOptions(comparator: comparator)
+        )
+    }()
+
+    try database.put("2", forKey: "b")
+    try database.put("1", forKey: "a")
+    try database.put("3", forKey: "c")
+
+    #expect(try collectKeys(database) == ["c", "b", "a"])
+}
+
 @Test func openOptionsResourcesCanBeSharedAcrossDatabaseLifetimes() throws {
     let firstDirectory = temporaryDatabaseDirectory()
     let secondDirectory = temporaryDatabaseDirectory()
@@ -347,4 +412,27 @@ private func assertDatabaseWritesAndReads(options: Database.OpenOptions) throws 
     try database.put("value", forKey: "key")
 
     #expect(try database.string(forKey: "key") == "value")
+}
+
+private func collectKeys(_ database: Database) throws -> [String] {
+    let iterator = database.makeIterator()
+    iterator.seekToFirst()
+
+    var keys: [String] = []
+    while iterator.isValid {
+        if let key = iterator.key {
+            keys.append(String(decoding: key, as: UTF8.self))
+        }
+        iterator.next()
+    }
+
+    try iterator.checkError()
+    return keys
+}
+
+private func reverseBytewiseCompare(_ lhs: Data, _ rhs: Data) -> ComparisonResult {
+    if lhs == rhs {
+        return .orderedSame
+    }
+    return rhs.lexicographicallyPrecedes(lhs) ? .orderedAscending : .orderedDescending
 }
