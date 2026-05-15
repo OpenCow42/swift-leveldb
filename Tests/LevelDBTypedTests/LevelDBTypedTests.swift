@@ -85,6 +85,44 @@ private struct User: Codable, Equatable, Sendable {
     }
 }
 
+@Test func scansOnlyKeysMatchingEncodedPrefix() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.strings(path: directory.path)
+    try await store.put("Ada", forKey: "index:user:name:ada")
+    try await store.put("Grace", forKey: "index:user:name:grace")
+    try await store.put("Paris", forKey: "index:city:name:paris")
+    try await store.put("record", forKey: "record:user:1")
+
+    let entries = try await store.scanEncodedPrefix(Data("index:user:name:".utf8))
+    let keys = entries.map(\.key)
+    let values = entries.map(\.value)
+
+    #expect(keys == ["index:user:name:ada", "index:user:name:grace"])
+    #expect(values == ["Ada", "Grace"])
+}
+
+@Test func scansBoundedRangesForwardAndReverse() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.strings(path: directory.path)
+    for key in ["a", "b", "c", "d"] {
+        try await store.put(key.uppercased(), forKey: key)
+    }
+
+    let forward = try await store.scan(from: "b", to: "d")
+    let reverse = try await store.reverseScan(from: "b", to: "d")
+
+    #expect(forward.map(\.key) == ["b", "c"])
+    #expect(reverse.map(\.key) == ["c", "b"])
+}
+
 private func temporaryDatabaseDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")

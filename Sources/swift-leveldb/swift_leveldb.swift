@@ -132,6 +132,83 @@ public final class Database {
         }
     }
 
+    public final class Iterator {
+        private let database: Database
+        private let handle: OpaquePointer
+
+        fileprivate init(database: Database, readOptions: ReadOptions) {
+            self.database = database
+            let rawOptions = Database.makeReadOptions(readOptions)
+            defer { leveldb_readoptions_destroy(rawOptions) }
+            handle = leveldb_create_iterator(database.handle, rawOptions)
+        }
+
+        deinit {
+            leveldb_iter_destroy(handle)
+        }
+
+        public var isValid: Bool {
+            leveldb_iter_valid(handle) != 0
+        }
+
+        public var key: Data? {
+            guard isValid else { return nil }
+
+            var keyCount = 0
+            guard let key = leveldb_iter_key(handle, &keyCount) else {
+                return nil
+            }
+
+            return Data(bytes: key, count: keyCount)
+        }
+
+        public var value: Data? {
+            guard isValid else { return nil }
+
+            var valueCount = 0
+            guard let value = leveldb_iter_value(handle, &valueCount) else {
+                return nil
+            }
+
+            return Data(bytes: value, count: valueCount)
+        }
+
+        public func seekToFirst() {
+            leveldb_iter_seek_to_first(handle)
+        }
+
+        public func seekToLast() {
+            leveldb_iter_seek_to_last(handle)
+        }
+
+        public func seek(_ key: Data) {
+            key.withLevelDBBytes { keyPointer, keyCount in
+                leveldb_iter_seek(handle, keyPointer, keyCount)
+            }
+        }
+
+        public func seek(_ key: String) {
+            seek(Data(key.utf8))
+        }
+
+        public func next() {
+            leveldb_iter_next(handle)
+        }
+
+        public func previous() {
+            leveldb_iter_prev(handle)
+        }
+
+        public func checkError() throws {
+            var error: UnsafeMutablePointer<CChar>?
+            leveldb_iter_get_error(handle, &error)
+
+            if let error {
+                throw LevelDBError.operationFailed(Database.consume(error))
+            }
+        }
+    }
+
     private let handle: OpaquePointer
 
     public convenience init(path: String, createIfMissing: Bool = true) throws {
@@ -246,14 +323,8 @@ public final class Database {
     }
 
     public func get(_ key: Data, readOptions: ReadOptions) throws -> Data? {
-        let rawOptions = leveldb_readoptions_create()
+        let rawOptions = Self.makeReadOptions(readOptions)
         defer { leveldb_readoptions_destroy(rawOptions) }
-
-        leveldb_readoptions_set_verify_checksums(
-            rawOptions,
-            readOptions.verifyChecksums.levelDBBool
-        )
-        leveldb_readoptions_set_fill_cache(rawOptions, readOptions.fillCache.levelDBBool)
 
         var error: UnsafeMutablePointer<CChar>?
         var valueCount = 0
@@ -311,6 +382,24 @@ public final class Database {
 
     public func deleteValue(forKey key: String, sync: Bool = false) throws {
         try deleteValue(forKey: Data(key.utf8), sync: sync)
+    }
+
+    public func iterator(readOptions: ReadOptions = .default) -> Iterator {
+        Iterator(database: self, readOptions: readOptions)
+    }
+
+    public func makeIterator(readOptions: ReadOptions = .default) -> Iterator {
+        iterator(readOptions: readOptions)
+    }
+
+    private static func makeReadOptions(_ options: ReadOptions) -> OpaquePointer {
+        let rawOptions = leveldb_readoptions_create()!
+        leveldb_readoptions_set_verify_checksums(
+            rawOptions,
+            options.verifyChecksums.levelDBBool
+        )
+        leveldb_readoptions_set_fill_cache(rawOptions, options.fillCache.levelDBBool)
+        return rawOptions
     }
 
     private static func consume(_ error: UnsafeMutablePointer<CChar>) -> String {

@@ -150,6 +150,141 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
         try build(batch)
         try database.write(batch.rawBatch, writeOptions: writeOptions)
     }
+
+    public func scan(
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        try await scan(from: nil, to: nil, readOptions: readOptions)
+    }
+
+    public func scan(
+        from lowerBound: KeyCodec.Value? = nil,
+        to upperBound: KeyCodec.Value? = nil,
+        includingUpperBound: Bool = false,
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        let lowerKey = try lowerBound.map { try keyCodec.encode($0) }
+        let upperKey = try upperBound.map { try keyCodec.encode($0) }
+        return try await scanEncodedRange(
+            from: lowerKey,
+            to: upperKey,
+            includingUpperBound: includingUpperBound,
+            readOptions: readOptions
+        )
+    }
+
+    public func reverseScan(
+        from lowerBound: KeyCodec.Value? = nil,
+        to upperBound: KeyCodec.Value? = nil,
+        includingUpperBound: Bool = false,
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        let lowerKey = try lowerBound.map { try keyCodec.encode($0) }
+        let upperKey = try upperBound.map { try keyCodec.encode($0) }
+        return try await reverseScanEncodedRange(
+            from: lowerKey,
+            to: upperKey,
+            includingUpperBound: includingUpperBound,
+            readOptions: readOptions
+        )
+    }
+
+    public func scanEncodedPrefix(
+        _ prefix: Data,
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        let iterator = database.makeIterator(readOptions: readOptions)
+        iterator.seek(prefix)
+
+        var entries: [(key: KeyCodec.Value, value: ValueCodec.Value)] = []
+        while iterator.isValid {
+            guard let key = iterator.key, key.starts(with: prefix) else {
+                break
+            }
+            guard let value = iterator.value else {
+                break
+            }
+            entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
+            iterator.next()
+        }
+
+        try iterator.checkError()
+        return entries
+    }
+
+    public func scanEncodedRange(
+        from lowerBound: Data? = nil,
+        to upperBound: Data? = nil,
+        includingUpperBound: Bool = false,
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        let iterator = database.makeIterator(readOptions: readOptions)
+        if let lowerBound {
+            iterator.seek(lowerBound)
+        } else {
+            iterator.seekToFirst()
+        }
+
+        var entries: [(key: KeyCodec.Value, value: ValueCodec.Value)] = []
+        while iterator.isValid {
+            guard let key = iterator.key else { break }
+            if let upperBound {
+                let comparison = Self.compare(key, upperBound)
+                if comparison > 0 || (!includingUpperBound && comparison == 0) {
+                    break
+                }
+            }
+            guard let value = iterator.value else { break }
+            entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
+            iterator.next()
+        }
+
+        try iterator.checkError()
+        return entries
+    }
+
+    public func reverseScanEncodedRange(
+        from lowerBound: Data? = nil,
+        to upperBound: Data? = nil,
+        includingUpperBound: Bool = false,
+        readOptions: Database.ReadOptions = .default
+    ) async throws -> [(key: KeyCodec.Value, value: ValueCodec.Value)] {
+        let iterator = database.makeIterator(readOptions: readOptions)
+        if let upperBound {
+            iterator.seek(upperBound)
+            if iterator.isValid {
+                if let key = iterator.key {
+                    let comparison = Self.compare(key, upperBound)
+                    if comparison > 0 || (!includingUpperBound && comparison == 0) {
+                        iterator.previous()
+                    }
+                }
+            } else {
+                iterator.seekToLast()
+            }
+        } else {
+            iterator.seekToLast()
+        }
+
+        var entries: [(key: KeyCodec.Value, value: ValueCodec.Value)] = []
+        while iterator.isValid {
+            guard let key = iterator.key else { break }
+            if let lowerBound, Self.compare(key, lowerBound) < 0 {
+                break
+            }
+            guard let value = iterator.value else { break }
+            entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
+            iterator.previous()
+        }
+
+        try iterator.checkError()
+        return entries
+    }
+
+    private static func compare(_ lhs: Data, _ rhs: Data) -> Int {
+        if lhs == rhs { return 0 }
+        return lhs.lexicographicallyPrecedes(rhs) ? -1 : 1
+    }
 }
 
 public typealias StringLevelDBStore = LevelDBStore<StringCodec, StringCodec>
