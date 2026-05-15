@@ -39,6 +39,54 @@ surface.
 See [VENDORING.md](VENDORING.md) for the update procedure and local integration
 files.
 
+## Products
+
+The package exposes two Swift products:
+
+- `swift-leveldb`: the low-level Swift wrapper over LevelDB's C API. Use this
+  when you want direct `Data` access and explicit read/write/open options.
+- `swift-leveldb-typed`: an optional higher-level layer with typed codecs and an
+  actor-based async store. Use this when you want Swift-native values and
+  `async`/`await` ergonomics.
+
+The typed product depends on the low-level product. It does not introduce a
+second LevelDB build or a second vendored source tree.
+
+### Low-Level Usage
+
+```swift
+import Foundation
+import swift_leveldb
+
+let database = try Database(path: "/tmp/example.leveldb")
+try database.put("value", forKey: "key")
+
+let value = try database.string(forKey: "key")
+```
+
+### Typed Async Usage
+
+```swift
+import LevelDBTyped
+
+struct User: Codable, Sendable {
+    var id: Int
+    var name: String
+}
+
+let users = try LevelDBStores.json(
+    path: "/tmp/users.leveldb",
+    valueType: User.self
+)
+
+try await users.put(User(id: 1, name: "Ada"), forKey: "users/1")
+let user = try await users.value(forKey: "users/1")
+```
+
+`LevelDBTyped` uses codecs to convert Swift values to and from LevelDB bytes.
+`Codable` JSON is provided as a default, but callers can define custom codecs for
+other formats.
+
 ## Development
 
 Run the test suite with:

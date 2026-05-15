@@ -11,6 +11,10 @@ let package = Package(
             name: "swift-leveldb",
             targets: ["swift-leveldb"]
         ),
+        .library(
+            name: "swift-leveldb-typed",
+            targets: ["LevelDBTyped"]
+        ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -127,9 +131,17 @@ let package = Package(
             name: "swift-leveldb",
             dependencies: ["CLevelDB"]
         ),
+        .target(
+            name: "LevelDBTyped",
+            dependencies: ["swift-leveldb"]
+        ),
         .testTarget(
             name: "swift-leveldbTests",
             dependencies: ["swift-leveldb"]
+        ),
+        .testTarget(
+            name: "LevelDBTypedTests",
+            dependencies: ["LevelDBTyped"]
         ),
     ],
     swiftLanguageModes: [.v6],
