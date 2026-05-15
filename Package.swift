@@ -5,6 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "swift-leveldb",
+    platforms: [.macOS(.v10_15), .iOS(.v13), .watchOS(.v6), .tvOS(.v13)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
@@ -15,6 +16,13 @@ let package = Package(
             name: "swift-leveldb-typed",
             targets: ["LevelDBTyped"]
         ),
+        .library(
+            name: "swift-leveldb-zstd",
+            targets: ["LevelDBZstd"]
+        ),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -135,6 +143,13 @@ let package = Package(
             name: "LevelDBTyped",
             dependencies: ["swift-leveldb"]
         ),
+        .target(
+            name: "LevelDBZstd",
+            dependencies: [
+                "LevelDBTyped",
+                .product(name: "libzstd", package: "zstd"),
+            ]
+        ),
         .testTarget(
             name: "swift-leveldbTests",
             dependencies: ["swift-leveldb"]
@@ -142,6 +157,10 @@ let package = Package(
         .testTarget(
             name: "LevelDBTypedTests",
             dependencies: ["LevelDBTyped"]
+        ),
+        .testTarget(
+            name: "LevelDBZstdTests",
+            dependencies: ["LevelDBZstd"]
         ),
     ],
     swiftLanguageModes: [.v6],

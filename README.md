@@ -41,16 +41,19 @@ files.
 
 ## Products
 
-The package exposes two Swift products:
+The package exposes three Swift products:
 
 - `swift-leveldb`: the low-level Swift wrapper over LevelDB's C API. Use this
   when you want direct `Data` access and explicit read/write/open options.
 - `swift-leveldb-typed`: an optional higher-level layer with typed codecs and an
   actor-based async store. Use this when you want Swift-native values and
   `async`/`await` ergonomics.
+- `swift-leveldb-zstd`: an optional codec layer backed by
+  [facebook/zstd](https://github.com/facebook/zstd). Use this when you want to
+  compose Zstandard compression with another codec.
 
-The typed product depends on the low-level product. It does not introduce a
-second LevelDB build or a second vendored source tree.
+The typed and ZSTD products depend on the low-level product. They do not
+introduce a second LevelDB build or a second vendored source tree.
 
 ### Low-Level Usage
 
@@ -86,6 +89,31 @@ let user = try await users.value(forKey: "users/1")
 `LevelDBTyped` uses codecs to convert Swift values to and from LevelDB bytes.
 `Codable` JSON is provided as a default, but callers can define custom codecs for
 other formats.
+
+### ZSTD Codec Usage
+
+```swift
+import LevelDBTyped
+import LevelDBZstd
+
+struct User: Codable, Sendable {
+    var id: Int
+    var name: String
+}
+
+let users = try LevelDBStore(
+    path: "/tmp/users.leveldb",
+    keyCodec: StringCodec(),
+    valueCodec: ZstdCodec(wrapping: JSONCodec<User>())
+)
+
+try await users.put(User(id: 1, name: "Ada"), forKey: "users/1")
+let user = try await users.value(forKey: "users/1")
+```
+
+`ZstdCodec` wraps another codec. That keeps compression separate from
+serialization, so the same wrapper can be used with JSON, Protobuf, raw `Data`,
+or a custom binary codec.
 
 ## Development
 
