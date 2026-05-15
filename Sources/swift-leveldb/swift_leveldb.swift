@@ -78,6 +78,11 @@ public final class WriteBatch {
 
 public final class Database {
     public struct OpenOptions: Equatable, Sendable {
+        public enum Compression: Equatable, Sendable {
+            case none
+            case snappy
+        }
+
         public static let `default` = OpenOptions()
 
         public var createIfMissing: Bool
@@ -88,6 +93,9 @@ public final class Database {
         public var blockSize: Int?
         public var blockRestartInterval: Int?
         public var maxFileSize: Int?
+        public var compression: Compression?
+        public var cache: Cache?
+        public var filterPolicy: FilterPolicy?
 
         public init(
             createIfMissing: Bool = true,
@@ -97,7 +105,10 @@ public final class Database {
             maxOpenFiles: Int? = nil,
             blockSize: Int? = nil,
             blockRestartInterval: Int? = nil,
-            maxFileSize: Int? = nil
+            maxFileSize: Int? = nil,
+            compression: Compression? = nil,
+            cache: Cache? = nil,
+            filterPolicy: FilterPolicy? = nil
         ) {
             self.createIfMissing = createIfMissing
             self.errorIfExists = errorIfExists
@@ -107,6 +118,64 @@ public final class Database {
             self.blockSize = blockSize
             self.blockRestartInterval = blockRestartInterval
             self.maxFileSize = maxFileSize
+            self.compression = compression
+            self.cache = cache
+            self.filterPolicy = filterPolicy
+        }
+    }
+
+    public final class Cache: @unchecked Sendable, Equatable {
+        public enum Kind: Equatable, Sendable {
+            case lru(capacity: Int)
+        }
+
+        public let kind: Kind
+        fileprivate let handle: OpaquePointer
+
+        private init(kind: Kind, handle: OpaquePointer) {
+            self.kind = kind
+            self.handle = handle
+        }
+
+        deinit {
+            leveldb_cache_destroy(handle)
+        }
+
+        public static func lru(capacity: Int) -> Cache {
+            Cache(kind: .lru(capacity: capacity), handle: leveldb_cache_create_lru(capacity)!)
+        }
+
+        public static func == (lhs: Cache, rhs: Cache) -> Bool {
+            lhs.kind == rhs.kind
+        }
+    }
+
+    public final class FilterPolicy: @unchecked Sendable, Equatable {
+        public enum Kind: Equatable, Sendable {
+            case bloom(bitsPerKey: Int)
+        }
+
+        public let kind: Kind
+        fileprivate let handle: OpaquePointer
+
+        private init(kind: Kind, handle: OpaquePointer) {
+            self.kind = kind
+            self.handle = handle
+        }
+
+        deinit {
+            leveldb_filterpolicy_destroy(handle)
+        }
+
+        public static func bloom(bitsPerKey: Int) -> FilterPolicy {
+            FilterPolicy(
+                kind: .bloom(bitsPerKey: bitsPerKey),
+                handle: leveldb_filterpolicy_create_bloom(Int32(bitsPerKey))!
+            )
+        }
+
+        public static func == (lhs: FilterPolicy, rhs: FilterPolicy) -> Bool {
+            lhs.kind == rhs.kind
         }
     }
 
@@ -250,6 +319,7 @@ public final class Database {
     }
 
     private let handle: OpaquePointer
+    private let openOptionResources: [AnyObject]
 
     public convenience init(path: String, createIfMissing: Bool = true) throws {
         try self.init(
@@ -260,11 +330,11 @@ public final class Database {
 
     public init(path: String, options: OpenOptions) throws {
         let rawOptions = Self.makeOpenOptions(options)
-        defer { leveldb_options_destroy(rawOptions) }
+        defer { leveldb_options_destroy(rawOptions.handle) }
 
         var error: UnsafeMutablePointer<CChar>?
         let database = path.withCString { pathPointer in
-            leveldb_open(rawOptions, pathPointer, &error)
+            leveldb_open(rawOptions.handle, pathPointer, &error)
         }
 
         if let error {
@@ -276,6 +346,7 @@ public final class Database {
         }
 
         handle = database
+        openOptionResources = rawOptions.resources
     }
 
     deinit {
@@ -500,11 +571,11 @@ public final class Database {
 
     public static func destroy(path: String, options: OpenOptions = .default) throws {
         let rawOptions = makeOpenOptions(options)
-        defer { leveldb_options_destroy(rawOptions) }
+        defer { leveldb_options_destroy(rawOptions.handle) }
 
         var error: UnsafeMutablePointer<CChar>?
         path.withCString { pathPointer in
-            leveldb_destroy_db(rawOptions, pathPointer, &error)
+            leveldb_destroy_db(rawOptions.handle, pathPointer, &error)
         }
 
         if let error {
@@ -514,11 +585,11 @@ public final class Database {
 
     public static func repair(path: String, options: OpenOptions = .default) throws {
         let rawOptions = makeOpenOptions(options)
-        defer { leveldb_options_destroy(rawOptions) }
+        defer { leveldb_options_destroy(rawOptions.handle) }
 
         var error: UnsafeMutablePointer<CChar>?
         path.withCString { pathPointer in
-            leveldb_repair_db(rawOptions, pathPointer, &error)
+            leveldb_repair_db(rawOptions.handle, pathPointer, &error)
         }
 
         if let error {
@@ -526,8 +597,9 @@ public final class Database {
         }
     }
 
-    private static func makeOpenOptions(_ options: OpenOptions) -> OpaquePointer {
+    private static func makeOpenOptions(_ options: OpenOptions) -> (handle: OpaquePointer, resources: [AnyObject]) {
         let rawOptions = leveldb_options_create()!
+        var resources: [AnyObject] = []
         leveldb_options_set_create_if_missing(rawOptions, options.createIfMissing.levelDBBool)
         leveldb_options_set_error_if_exists(rawOptions, options.errorIfExists.levelDBBool)
         leveldb_options_set_paranoid_checks(rawOptions, options.paranoidChecks.levelDBBool)
@@ -546,7 +618,18 @@ public final class Database {
         if let maxFileSize = options.maxFileSize {
             leveldb_options_set_max_file_size(rawOptions, maxFileSize)
         }
-        return rawOptions
+        if let compression = options.compression {
+            leveldb_options_set_compression(rawOptions, compression.levelDBCompression)
+        }
+        if let cache = options.cache {
+            leveldb_options_set_cache(rawOptions, cache.handle)
+            resources.append(cache)
+        }
+        if let filterPolicy = options.filterPolicy {
+            leveldb_options_set_filter_policy(rawOptions, filterPolicy.handle)
+            resources.append(filterPolicy)
+        }
+        return (rawOptions, resources)
     }
 
     private static func makeReadOptions(_ options: ReadOptions) -> OpaquePointer {
@@ -599,6 +682,17 @@ public final class Database {
 private extension Bool {
     var levelDBBool: UInt8 {
         self ? 1 : 0
+    }
+}
+
+private extension Database.OpenOptions.Compression {
+    var levelDBCompression: Int32 {
+        switch self {
+        case .none:
+            Int32(leveldb_no_compression)
+        case .snappy:
+            Int32(leveldb_snappy_compression)
+        }
     }
 }
 

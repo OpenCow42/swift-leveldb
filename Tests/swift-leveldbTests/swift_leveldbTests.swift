@@ -257,3 +257,60 @@ private func temporaryDatabaseDirectory() -> URL {
     )
     #expect(try repaired.string(forKey: "key") == "value")
 }
+
+@Test func openWithNoCompressionWritesAndReadsData() throws {
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(compression: Database.OpenOptions.Compression.none)
+    )
+}
+
+@Test func openWithSnappyCompressionWritesAndReadsData() throws {
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(compression: .snappy)
+    )
+}
+
+@Test func openWithLRUCacheWritesAndReadsData() throws {
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(cache: .lru(capacity: 1024 * 1024))
+    )
+}
+
+@Test func openWithBloomFilterPolicyWritesAndReadsData() throws {
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(filterPolicy: .bloom(bitsPerKey: 10))
+    )
+}
+
+@Test func openOptionsResourcesCanBeSharedAcrossDatabaseLifetimes() throws {
+    let firstDirectory = temporaryDatabaseDirectory()
+    let secondDirectory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: firstDirectory)
+        try? FileManager.default.removeItem(at: secondDirectory)
+    }
+
+    let cache = Database.Cache.lru(capacity: 1024 * 1024)
+    let filterPolicy = Database.FilterPolicy.bloom(bitsPerKey: 10)
+    let options = Database.OpenOptions(cache: cache, filterPolicy: filterPolicy)
+
+    do {
+        let database = try Database(path: firstDirectory.path, options: options)
+        try database.put("first", forKey: "key")
+        #expect(try database.string(forKey: "key") == "first")
+    }
+
+    let database = try Database(path: secondDirectory.path, options: options)
+    try database.put("second", forKey: "key")
+    #expect(try database.string(forKey: "key") == "second")
+}
+
+private func assertDatabaseWritesAndReads(options: Database.OpenOptions) throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try Database(path: directory.path, options: options)
+    try database.put("value", forKey: "key")
+
+    #expect(try database.string(forKey: "key") == "value")
+}
