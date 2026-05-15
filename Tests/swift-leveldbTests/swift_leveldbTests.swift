@@ -455,6 +455,28 @@ private func temporaryDatabaseDirectory() -> URL {
     #expect(try database.string(forKey: "key") == "second")
 }
 
+@Test func defaultEnvironmentCanOpenDatabase() throws {
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(environment: .default)
+    )
+}
+
+@Test func environmentTestDirectoryReturnsUsablePath() throws {
+    let environment = Database.Environment.default
+    let testDirectory = try #require(environment.testDirectory())
+    let directory = URL(fileURLWithPath: testDirectory)
+        .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let database = try Database(
+        path: directory.path,
+        options: Database.OpenOptions(environment: environment)
+    )
+    try database.put("value", forKey: "key")
+
+    #expect(try database.string(forKey: "key") == "value")
+}
+
 private func assertDatabaseWritesAndReads(options: Database.OpenOptions) throws {
     let directory = temporaryDatabaseDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

@@ -196,6 +196,7 @@ public final class Database {
         public var cache: Cache?
         public var filterPolicy: FilterPolicy?
         public var comparator: Comparator?
+        public var environment: Environment?
 
         public init(
             createIfMissing: Bool = true,
@@ -209,7 +210,8 @@ public final class Database {
             compression: Compression? = nil,
             cache: Cache? = nil,
             filterPolicy: FilterPolicy? = nil,
-            comparator: Comparator? = nil
+            comparator: Comparator? = nil,
+            environment: Environment? = nil
         ) {
             self.createIfMissing = createIfMissing
             self.errorIfExists = errorIfExists
@@ -223,6 +225,49 @@ public final class Database {
             self.cache = cache
             self.filterPolicy = filterPolicy
             self.comparator = comparator
+            self.environment = environment
+        }
+    }
+
+    /// A LevelDB environment used for filesystem, locking, and background work.
+    ///
+    /// This wrapper currently exposes only the default environment. Lower-level opaque C handle
+    /// families such as `leveldb_logger_t`, `leveldb_filelock_t`, `leveldb_randomfile_t`,
+    /// `leveldb_seqfile_t`, and `leveldb_writablefile_t` remain intentionally unwrapped because
+    /// LevelDB's C API does not provide a complete public construction and lifecycle surface for
+    /// them here; exposing unusable raw handles would not add a safe Swift API.
+    public final class Environment: @unchecked Sendable, Equatable {
+        fileprivate let handle: OpaquePointer
+
+        private init(handle: OpaquePointer) {
+            self.handle = handle
+        }
+
+        deinit {
+            leveldb_env_destroy(handle)
+        }
+
+        public static var `default`: Environment {
+            Environment(handle: leveldb_create_default_env()!)
+        }
+
+        public func testDirectory() -> String? {
+            let directory = leveldb_env_get_test_directory(handle)
+            defer {
+                if let directory {
+                    leveldb_free(directory)
+                }
+            }
+
+            guard let directory else {
+                return nil
+            }
+
+            return String(cString: directory)
+        }
+
+        public static func == (lhs: Environment, rhs: Environment) -> Bool {
+            lhs === rhs
         }
     }
 
@@ -881,6 +926,10 @@ public final class Database {
         if let comparator = options.comparator {
             leveldb_options_set_comparator(rawOptions, comparator.handle)
             resources.append(comparator)
+        }
+        if let environment = options.environment {
+            leveldb_options_set_env(rawOptions, environment.handle)
+            resources.append(environment)
         }
         return (rawOptions, resources)
     }
