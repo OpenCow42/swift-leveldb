@@ -148,6 +148,33 @@ private final class ComparatorState {
     }
 }
 
+private final class FilterPolicyState {
+    let createFilter: @Sendable ([Data]) -> Data
+    let keyMayMatch: @Sendable (Data, Data) -> Bool
+    let namePointer: UnsafeMutablePointer<CChar>
+    let nameCount: Int
+
+    init(
+        name: String,
+        createFilter: @escaping @Sendable ([Data]) -> Data,
+        keyMayMatch: @escaping @Sendable (Data, Data) -> Bool
+    ) {
+        self.createFilter = createFilter
+        self.keyMayMatch = keyMayMatch
+        let nameBytes = name.utf8CString
+        nameCount = nameBytes.count
+        namePointer = UnsafeMutablePointer<CChar>.allocate(capacity: nameCount)
+        nameBytes.withUnsafeBufferPointer { buffer in
+            namePointer.initialize(from: buffer.baseAddress!, count: buffer.count)
+        }
+    }
+
+    deinit {
+        namePointer.deinitialize(count: nameCount)
+        namePointer.deallocate()
+    }
+}
+
 public final class Database {
     public struct OpenOptions: Equatable, Sendable {
         public enum Compression: Equatable, Sendable {
@@ -294,6 +321,7 @@ public final class Database {
     public final class FilterPolicy: @unchecked Sendable, Equatable {
         public enum Kind: Equatable, Sendable {
             case bloom(bitsPerKey: Int)
+            case custom(name: String)
         }
 
         public let kind: Kind
@@ -313,6 +341,86 @@ public final class Database {
                 kind: .bloom(bitsPerKey: bitsPerKey),
                 handle: leveldb_filterpolicy_create_bloom(Int32(bitsPerKey))!
             )
+        }
+
+        /// Creates a custom LevelDB filter policy.
+        ///
+        /// The policy name is a persisted compatibility contract for a database. Keep it stable,
+        /// non-empty, and change it whenever the filter encoding or matching semantics change.
+        /// Callback inputs are copied into Swift-owned `Data` before invocation. Returned filter
+        /// bytes are copied into memory that LevelDB's C API releases after consuming them.
+        public static func custom(
+            name: String,
+            createFilter: @escaping @Sendable ([Data]) -> Data,
+            keyMayMatch: @escaping @Sendable (_ key: Data, _ filter: Data) -> Bool
+        ) -> FilterPolicy {
+            precondition(!name.isEmpty, "LevelDB filter policy names must be stable and non-empty.")
+
+            let state = FilterPolicyState(
+                name: name,
+                createFilter: createFilter,
+                keyMayMatch: keyMayMatch
+            )
+            let retainedState = Unmanaged.passRetained(state)
+            let handle = leveldb_filterpolicy_create(
+                retainedState.toOpaque(),
+                { statePointer in
+                    guard let statePointer else { return }
+                    Unmanaged<FilterPolicyState>.fromOpaque(statePointer).release()
+                },
+                { statePointer, keyArray, keyLengthArray, keyCount, filterLengthPointer in
+                    guard let statePointer else {
+                        filterLengthPointer?.pointee = 0
+                        return malloc(1)?.assumingMemoryBound(to: CChar.self)
+                    }
+
+                    let state = Unmanaged<FilterPolicyState>
+                        .fromOpaque(statePointer)
+                        .takeUnretainedValue()
+                    let keys: [Data]
+                    if let keyArray, let keyLengthArray, keyCount > 0 {
+                        keys = (0..<Int(keyCount)).map { index in
+                            let count = keyLengthArray[index]
+                            return keyArray[index].map { Data(bytes: $0, count: count) } ?? Data()
+                        }
+                    } else {
+                        keys = []
+                    }
+
+                    let filter = state.createFilter(keys)
+                    filterLengthPointer?.pointee = filter.count
+                    let pointer = malloc(max(filter.count, 1))!.assumingMemoryBound(to: CChar.self)
+                    if filter.isEmpty {
+                        pointer.initialize(to: 0)
+                    } else {
+                        filter.withUnsafeBytes { buffer in
+                            pointer.initialize(
+                                from: buffer.baseAddress!.assumingMemoryBound(to: CChar.self),
+                                count: filter.count
+                            )
+                        }
+                    }
+                    return pointer
+                },
+                { statePointer, keyPointer, keyCount, filterPointer, filterCount in
+                    guard let statePointer else { return 1 }
+                    let state = Unmanaged<FilterPolicyState>
+                        .fromOpaque(statePointer)
+                        .takeUnretainedValue()
+                    let key = keyPointer.map { Data(bytes: $0, count: keyCount) } ?? Data()
+                    let filter = filterPointer.map { Data(bytes: $0, count: filterCount) } ?? Data()
+                    return state.keyMayMatch(key, filter).levelDBBool
+                },
+                { statePointer in
+                    guard let statePointer else { return nil }
+                    let state = Unmanaged<FilterPolicyState>
+                        .fromOpaque(statePointer)
+                        .takeUnretainedValue()
+                    return UnsafePointer(state.namePointer)
+                }
+            )!
+
+            return FilterPolicy(kind: .custom(name: name), handle: handle)
         }
 
         public static func == (lhs: FilterPolicy, rhs: FilterPolicy) -> Bool {

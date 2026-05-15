@@ -316,6 +316,57 @@ private func temporaryDatabaseDirectory() -> URL {
     )
 }
 
+@Test func openWithCustomFilterPolicyWritesAndReadsData() throws {
+    let filterPolicy = Database.FilterPolicy.custom(
+        name: "swift-leveldb.tests.always-match",
+        createFilter: { keys in
+            Data("keys:\(keys.count)".utf8)
+        },
+        keyMayMatch: { _, _ in true }
+    )
+
+    try assertDatabaseWritesAndReads(
+        options: Database.OpenOptions(filterPolicy: filterPolicy)
+    )
+}
+
+@Test func customFilterPolicyCallbackStateStaysAliveForDatabaseLifetime() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    final class CallbackState: @unchecked Sendable {
+        var createdFilters = 0
+        var matchChecks = 0
+    }
+
+    let state = CallbackState()
+    let database: Database = try {
+        let filterPolicy = Database.FilterPolicy.custom(
+            name: "swift-leveldb.tests.stateful-always-match",
+            createFilter: { keys in
+                state.createdFilters += 1
+                return Data("keys:\(keys.count)".utf8)
+            },
+            keyMayMatch: { _, _ in
+                state.matchChecks += 1
+                return true
+            }
+        )
+        return try Database(
+            path: directory.path,
+            options: Database.OpenOptions(filterPolicy: filterPolicy)
+        )
+    }()
+
+    try database.put("value", forKey: "key")
+    database.compactRange()
+
+    #expect(try database.string(forKey: "key") == "value")
+    _ = try database.string(forKey: "missing")
+    #expect(state.createdFilters > 0)
+    #expect(state.matchChecks > 0)
+}
+
 @Test func customComparatorControlsIterationOrder() throws {
     let directory = temporaryDatabaseDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
