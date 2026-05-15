@@ -123,6 +123,53 @@ import Testing
     try iterator.checkError()
 }
 
+@Test func snapshotReadSeesValueFromCreationTime() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    try database.put("old", forKey: "key")
+    let snapshot = database.snapshot()
+    try database.put("new", forKey: "key")
+
+    let snapshotOptions = Database.ReadOptions(snapshot: snapshot)
+    #expect(try database.string(forKey: "key", readOptions: snapshotOptions) == "old")
+    #expect(try database.string(forKey: "key") == "new")
+}
+
+@Test func scopedSnapshotReadSeesValueFromCreationTime() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    try database.put("old", forKey: "key")
+    let snapshotValue = try database.withSnapshot { snapshot in
+        try database.put("new", forKey: "key")
+        return try database.string(
+            forKey: "key",
+            readOptions: Database.ReadOptions(snapshot: snapshot)
+        )
+    }
+
+    #expect(snapshotValue == "old")
+    #expect(try database.string(forKey: "key") == "new")
+}
+
+@Test func releasedSnapshotDoesNotPreventFurtherReads() throws {
+    let directory = temporaryDatabaseDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try Database(path: directory.path)
+
+    try database.put("value", forKey: "key")
+    do {
+        let snapshot = database.snapshot()
+        let readOptions = Database.ReadOptions(snapshot: snapshot)
+        #expect(try database.string(forKey: "key", readOptions: readOptions) == "value")
+    }
+
+    #expect(try database.string(forKey: "key") == "value")
+}
+
 private func temporaryDatabaseDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")

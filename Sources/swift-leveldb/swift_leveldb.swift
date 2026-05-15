@@ -115,10 +115,22 @@ public final class Database {
 
         public var verifyChecksums: Bool
         public var fillCache: Bool
+        public var snapshot: Snapshot?
 
-        public init(verifyChecksums: Bool = false, fillCache: Bool = true) {
+        public init(
+            verifyChecksums: Bool = false,
+            fillCache: Bool = true,
+            snapshot: Snapshot? = nil
+        ) {
             self.verifyChecksums = verifyChecksums
             self.fillCache = fillCache
+            self.snapshot = snapshot
+        }
+
+        public static func == (lhs: ReadOptions, rhs: ReadOptions) -> Bool {
+            lhs.verifyChecksums == rhs.verifyChecksums
+                && lhs.fillCache == rhs.fillCache
+                && lhs.snapshot === rhs.snapshot
         }
     }
 
@@ -129,6 +141,20 @@ public final class Database {
 
         public init(sync: Bool = false) {
             self.sync = sync
+        }
+    }
+
+    public final class Snapshot: @unchecked Sendable {
+        private let database: Database
+        fileprivate let handle: OpaquePointer
+
+        fileprivate init(database: Database) {
+            self.database = database
+            handle = leveldb_create_snapshot(database.handle)
+        }
+
+        deinit {
+            leveldb_release_snapshot(database.handle, handle)
         }
     }
 
@@ -384,6 +410,14 @@ public final class Database {
         try deleteValue(forKey: Data(key.utf8), sync: sync)
     }
 
+    public func snapshot() -> Snapshot {
+        Snapshot(database: self)
+    }
+
+    public func withSnapshot<Result>(_ body: (Snapshot) throws -> Result) rethrows -> Result {
+        try body(snapshot())
+    }
+
     public func iterator(readOptions: ReadOptions = .default) -> Iterator {
         Iterator(database: self, readOptions: readOptions)
     }
@@ -399,6 +433,9 @@ public final class Database {
             options.verifyChecksums.levelDBBool
         )
         leveldb_readoptions_set_fill_cache(rawOptions, options.fillCache.levelDBBool)
+        if let snapshot = options.snapshot {
+            leveldb_readoptions_set_snapshot(rawOptions, snapshot.handle)
+        }
         return rawOptions
     }
 
