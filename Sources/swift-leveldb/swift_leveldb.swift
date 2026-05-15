@@ -32,6 +32,50 @@ public enum LevelDBError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+public final class WriteBatch {
+    fileprivate let handle: OpaquePointer
+
+    public init() {
+        handle = leveldb_writebatch_create()
+    }
+
+    deinit {
+        leveldb_writebatch_destroy(handle)
+    }
+
+    public func put(_ value: Data, forKey key: Data) {
+        key.withLevelDBBytes { keyPointer, keyCount in
+            value.withLevelDBBytes { valuePointer, valueCount in
+                leveldb_writebatch_put(
+                    handle,
+                    keyPointer,
+                    keyCount,
+                    valuePointer,
+                    valueCount
+                )
+            }
+        }
+    }
+
+    public func put(_ value: String, forKey key: String) {
+        put(Data(value.utf8), forKey: Data(key.utf8))
+    }
+
+    public func deleteValue(forKey key: Data) {
+        key.withLevelDBBytes { keyPointer, keyCount in
+            leveldb_writebatch_delete(handle, keyPointer, keyCount)
+        }
+    }
+
+    public func deleteValue(forKey key: String) {
+        deleteValue(forKey: Data(key.utf8))
+    }
+
+    public func clear() {
+        leveldb_writebatch_clear(handle)
+    }
+}
+
 public final class Database {
     public struct OpenOptions: Equatable, Sendable {
         public static let `default` = OpenOptions()
@@ -138,6 +182,29 @@ public final class Database {
 
     deinit {
         leveldb_close(handle)
+    }
+
+    public func write(_ batch: WriteBatch, writeOptions: WriteOptions = .default) throws {
+        let rawOptions = leveldb_writeoptions_create()
+        defer { leveldb_writeoptions_destroy(rawOptions) }
+
+        leveldb_writeoptions_set_sync(rawOptions, writeOptions.sync.levelDBBool)
+
+        var error: UnsafeMutablePointer<CChar>?
+        leveldb_write(handle, rawOptions, batch.handle, &error)
+
+        if let error {
+            throw LevelDBError.operationFailed(Self.consume(error))
+        }
+    }
+
+    public func write(
+        writeOptions: WriteOptions = .default,
+        _ build: (WriteBatch) throws -> Void
+    ) throws {
+        let batch = WriteBatch()
+        try build(batch)
+        try write(batch, writeOptions: writeOptions)
     }
 
     public func put(_ value: Data, forKey key: Data, sync: Bool = false) throws {

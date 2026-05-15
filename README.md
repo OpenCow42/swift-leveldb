@@ -75,6 +75,8 @@ import LevelDBTyped
 struct User: Codable, Sendable {
     var id: Int
     var name: String
+    var email: String
+    var country: String
 }
 
 let users = try LevelDBStores.json(
@@ -114,6 +116,27 @@ let user = try await users.value(forKey: "users/1")
 `ZstdCodec` wraps another codec. That keeps compression separate from
 serialization, so the same wrapper can be used with JSON, Protobuf, raw `Data`,
 or a custom binary codec.
+
+### Atomic Records And Indexes
+
+Use write batches to commit a compressed record and its index entries together:
+
+```swift
+try await users.write { batch in
+    try batch.put(user, forKey: "record:user:\(user.id)")
+    batch.putRaw(
+        Data("\(user.id)".utf8),
+        forEncodedKey: Data("index:user_by_email:\(user.email)".utf8)
+    )
+    batch.putRaw(
+        Data(),
+        forEncodedKey: Data("index:users_by_country:\(user.country):\(user.id)".utf8)
+    )
+}
+```
+
+The record value is encoded by `ZstdCodec(wrapping: JSONCodec<User>())`, while
+the index keys stay plain and ordered for prefix/range scans.
 
 ## Development
 

@@ -59,6 +59,40 @@ public struct JSONCodec<Value: Codable & Sendable>: LevelDBCodec {
     }
 }
 
+public struct LevelDBTypedWriteBatch<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
+    public typealias Key = KeyCodec.Value
+    public typealias Value = ValueCodec.Value
+
+    let rawBatch: WriteBatch
+    private let keyCodec: KeyCodec
+    private let valueCodec: ValueCodec
+
+    public init(keyCodec: KeyCodec, valueCodec: ValueCodec) {
+        rawBatch = WriteBatch()
+        self.keyCodec = keyCodec
+        self.valueCodec = valueCodec
+    }
+
+    public func put(_ value: Value, forKey key: Key) throws {
+        let encodedKey = try keyCodec.encode(key)
+        let encodedValue = try valueCodec.encode(value)
+        rawBatch.put(encodedValue, forKey: encodedKey)
+    }
+
+    public func deleteValue(forKey key: Key) throws {
+        let encodedKey = try keyCodec.encode(key)
+        rawBatch.deleteValue(forKey: encodedKey)
+    }
+
+    public func putRaw(_ value: Data, forEncodedKey key: Data) {
+        rawBatch.put(value, forKey: key)
+    }
+
+    public func deleteRawValue(forEncodedKey key: Data) {
+        rawBatch.deleteValue(forKey: key)
+    }
+}
+
 public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
     private let database: Database
     private let keyCodec: KeyCodec
@@ -103,6 +137,18 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
     ) async throws {
         let encodedKey = try keyCodec.encode(key)
         try database.deleteValue(forKey: encodedKey, writeOptions: writeOptions)
+    }
+
+    public func write(
+        writeOptions: Database.WriteOptions = .default,
+        _ build: (LevelDBTypedWriteBatch<KeyCodec, ValueCodec>) throws -> Void
+    ) async throws {
+        let batch = LevelDBTypedWriteBatch(
+            keyCodec: keyCodec,
+            valueCodec: valueCodec
+        )
+        try build(batch)
+        try database.write(batch.rawBatch, writeOptions: writeOptions)
     }
 }
 
