@@ -15,7 +15,7 @@ changes.
 - Commit messages are expected to follow
   [Conventional Commits](https://www.conventionalcommits.org/), for example
   `feat: add database open options` or `test: cover iterator invalidation`.
-- Maintain greater than 90% test coverage for the project.
+- Maintain 100% Swift library line coverage for the project.
 - Each meaningful change must include meaningful tests.
 - Run `swift test` before considering a change complete. Do not describe work as
   finished if the test suite has not passed, unless you clearly explain why it
@@ -41,5 +41,5 @@ Before handing off work:
 - Confirm the change matches the manifesto.
 - Add or update tests for every meaningful behavior change.
 - Run `swift test`.
-- Check coverage and keep it above 90% when coverage tooling is available.
+- Run `Scripts/check-coverage.sh` when coverage tooling is available.
 - Review the diff for accidental churn or unrelated edits.

@@ -123,6 +123,82 @@ private struct User: Codable, Equatable, Sendable {
     #expect(reverse.map(\.key) == ["c", "b"])
 }
 
+@Test func opensStringStoreWithTypedDefaultOptions() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.strings(path: directory.path, options: .default)
+
+    try await store.put("value", forKey: "key")
+    #expect(try await store.value(forKey: "key") == "value")
+}
+
+@Test func opensJSONStoreWithBloomFilterTypedOption() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.json(
+        path: directory.path,
+        valueType: User.self,
+        options: LevelDBStoreOptions(bloomFilterBitsPerKey: 10)
+    )
+    let user = User(id: 1, name: "Ada")
+
+    try await store.put(user, forKey: "users/1")
+    #expect(try await store.value(forKey: "users/1") == user)
+}
+
+@Test func opensTypedStoreWithLRUCacheOption() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.strings(
+        path: directory.path,
+        options: LevelDBStoreOptions(lruCacheCapacity: 1024 * 1024)
+    )
+
+    try await store.put("cached", forKey: "key")
+    #expect(try await store.value(forKey: "key") == "cached")
+}
+
+@Test func opensTypedStoreWithCompressionOptions() async throws {
+    for compression in [Database.OpenOptions.Compression.none, .snappy] {
+        let directory = temporaryDatabaseDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let store = try LevelDBStores.strings(
+            path: directory.path,
+            options: LevelDBStoreOptions(compression: compression)
+        )
+
+        try await store.put("compressed", forKey: "key")
+        #expect(try await store.value(forKey: "key") == "compressed")
+    }
+}
+
+@Test func preservesAdvancedOpenOptionsEscapeHatch() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStores.strings(
+        path: directory.path,
+        openOptions: Database.OpenOptions(compression: Database.OpenOptions.Compression.none)
+    )
+
+    try await store.put("advanced", forKey: "key")
+    #expect(try await store.value(forKey: "key") == "advanced")
+}
+
 private func temporaryDatabaseDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")

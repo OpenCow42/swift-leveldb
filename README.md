@@ -55,6 +55,18 @@ The package exposes three Swift products:
 The typed and ZSTD products depend on the low-level product. They do not
 introduce a second LevelDB build or a second vendored source tree.
 
+The package also exposes benchmark executables:
+
+- `swift-leveldb-bench`: a Swift benchmark runner modeled after LevelDB's
+  `db_bench` scenarios.
+- `leveldb-db-bench`: the vendored upstream C++ `db_bench` runner, useful as a
+  native LevelDB comparison point.
+
+For normal typed usage, prefer `LevelDBStoreOptions`. It exposes safe common
+settings while omitting custom comparators, custom filter policies, and custom
+environments. See [LOW_LEVEL_API_SAFETY.md](LOW_LEVEL_API_SAFETY.md) before
+using those low-level escape hatches.
+
 ### Low-Level Usage
 
 ```swift
@@ -81,7 +93,8 @@ struct User: Codable, Sendable {
 
 let users = try LevelDBStores.json(
     path: "/tmp/users.leveldb",
-    valueType: User.self
+    valueType: User.self,
+    options: LevelDBStoreOptions(bloomFilterBitsPerKey: 10)
 )
 
 try await users.put(User(id: 1, name: "Ada"), forKey: "users/1")
@@ -147,7 +160,23 @@ swift test
 ```
 
 Every meaningful change should include meaningful tests. The project target is
-greater than 90% test coverage.
+100% Swift library line coverage. Check it with:
+
+```sh
+Scripts/check-coverage.sh
+```
+
+Run the Swift benchmark with:
+
+```sh
+swift run swift-leveldb-bench --benchmarks=fillseq,readrandom,seekrandom --num=10000 --reads=10000
+```
+
+Run the upstream LevelDB comparison benchmark with:
+
+```sh
+swift run leveldb-db-bench --benchmarks=fillseq,readrandom,seekrandom --num=10000 --reads=10000
+```
 
 ## License
 

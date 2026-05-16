@@ -59,6 +59,64 @@ public struct JSONCodec<Value: Codable & Sendable>: LevelDBCodec {
     }
 }
 
+public struct LevelDBStoreOptions: Sendable {
+    public static let `default` = LevelDBStoreOptions()
+
+    public var createIfMissing: Bool
+    public var errorIfExists: Bool
+    public var paranoidChecks: Bool
+    public var writeBufferSize: Int?
+    public var maxOpenFiles: Int?
+    public var blockSize: Int?
+    public var blockRestartInterval: Int?
+    public var maxFileSize: Int?
+    public var compression: Database.OpenOptions.Compression?
+    public var lruCacheCapacity: Int?
+    public var bloomFilterBitsPerKey: Int?
+
+    public init(
+        createIfMissing: Bool = true,
+        errorIfExists: Bool = false,
+        paranoidChecks: Bool = false,
+        writeBufferSize: Int? = nil,
+        maxOpenFiles: Int? = nil,
+        blockSize: Int? = nil,
+        blockRestartInterval: Int? = nil,
+        maxFileSize: Int? = nil,
+        compression: Database.OpenOptions.Compression? = nil,
+        lruCacheCapacity: Int? = nil,
+        bloomFilterBitsPerKey: Int? = nil
+    ) {
+        self.createIfMissing = createIfMissing
+        self.errorIfExists = errorIfExists
+        self.paranoidChecks = paranoidChecks
+        self.writeBufferSize = writeBufferSize
+        self.maxOpenFiles = maxOpenFiles
+        self.blockSize = blockSize
+        self.blockRestartInterval = blockRestartInterval
+        self.maxFileSize = maxFileSize
+        self.compression = compression
+        self.lruCacheCapacity = lruCacheCapacity
+        self.bloomFilterBitsPerKey = bloomFilterBitsPerKey
+    }
+
+    func makeOpenOptions() -> Database.OpenOptions {
+        Database.OpenOptions(
+            createIfMissing: createIfMissing,
+            errorIfExists: errorIfExists,
+            paranoidChecks: paranoidChecks,
+            writeBufferSize: writeBufferSize,
+            maxOpenFiles: maxOpenFiles,
+            blockSize: blockSize,
+            blockRestartInterval: blockRestartInterval,
+            maxFileSize: maxFileSize,
+            compression: compression,
+            cache: lruCacheCapacity.map(Database.Cache.lru(capacity:)),
+            filterPolicy: bloomFilterBitsPerKey.map(Database.FilterPolicy.bloom(bitsPerKey:))
+        )
+    }
+}
+
 public struct LevelDBTypedWriteBatch<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
     public typealias Key = KeyCodec.Value
     public typealias Value = ValueCodec.Value
@@ -102,7 +160,27 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
         path: String,
         keyCodec: KeyCodec,
         valueCodec: ValueCodec,
-        openOptions: Database.OpenOptions = .default
+        options: LevelDBStoreOptions = .default
+    ) throws {
+        try self.init(
+            path: path,
+            keyCodec: keyCodec,
+            valueCodec: valueCodec,
+            openOptions: options.makeOpenOptions()
+        )
+    }
+
+    /// Advanced initializer that accepts low-level database options.
+    ///
+    /// Prefer the `options: LevelDBStoreOptions` initializer for normal typed
+    /// usage. Low-level options can include custom comparators, custom filter
+    /// policies, and environments whose semantics must remain compatible with
+    /// the database for its full lifetime.
+    public init(
+        path: String,
+        keyCodec: KeyCodec,
+        valueCodec: ValueCodec,
+        openOptions: Database.OpenOptions
     ) throws {
         database = try Database(path: path, options: openOptions)
         self.keyCodec = keyCodec
@@ -201,9 +279,7 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
             guard let key = iterator.key, key.starts(with: prefix) else {
                 break
             }
-            guard let value = iterator.value else {
-                break
-            }
+            let value = iterator.value!
             entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
             iterator.next()
         }
@@ -227,14 +303,14 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
 
         var entries: [(key: KeyCodec.Value, value: ValueCodec.Value)] = []
         while iterator.isValid {
-            guard let key = iterator.key else { break }
+            let key = iterator.key!
             if let upperBound {
                 let comparison = Self.compare(key, upperBound)
                 if comparison > 0 || (!includingUpperBound && comparison == 0) {
                     break
                 }
             }
-            guard let value = iterator.value else { break }
+            let value = iterator.value!
             entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
             iterator.next()
         }
@@ -253,11 +329,10 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
         if let upperBound {
             iterator.seek(upperBound)
             if iterator.isValid {
-                if let key = iterator.key {
-                    let comparison = Self.compare(key, upperBound)
-                    if comparison > 0 || (!includingUpperBound && comparison == 0) {
-                        iterator.previous()
-                    }
+                let key = iterator.key!
+                let comparison = Self.compare(key, upperBound)
+                if comparison > 0 || (!includingUpperBound && comparison == 0) {
+                    iterator.previous()
                 }
             } else {
                 iterator.seekToLast()
@@ -268,11 +343,11 @@ public actor LevelDBStore<KeyCodec: LevelDBCodec, ValueCodec: LevelDBCodec> {
 
         var entries: [(key: KeyCodec.Value, value: ValueCodec.Value)] = []
         while iterator.isValid {
-            guard let key = iterator.key else { break }
+            let key = iterator.key!
             if let lowerBound, Self.compare(key, lowerBound) < 0 {
                 break
             }
-            guard let value = iterator.value else { break }
+            let value = iterator.value!
             entries.append((try keyCodec.decode(key), try valueCodec.decode(value)))
             iterator.previous()
         }
@@ -293,7 +368,19 @@ public typealias JSONLevelDBStore<Value: Codable & Sendable> = LevelDBStore<Stri
 public enum LevelDBStores {
     public static func strings(
         path: String,
-        openOptions: Database.OpenOptions = .default
+        options: LevelDBStoreOptions = .default
+    ) throws -> StringLevelDBStore {
+        try StringLevelDBStore(
+            path: path,
+            keyCodec: StringCodec(),
+            valueCodec: StringCodec(),
+            options: options
+        )
+    }
+
+    public static func strings(
+        path: String,
+        openOptions: Database.OpenOptions
     ) throws -> StringLevelDBStore {
         try StringLevelDBStore(
             path: path,
@@ -306,7 +393,20 @@ public enum LevelDBStores {
     public static func json<Value: Codable & Sendable>(
         path: String,
         valueType: Value.Type = Value.self,
-        openOptions: Database.OpenOptions = .default
+        options: LevelDBStoreOptions = .default
+    ) throws -> JSONLevelDBStore<Value> {
+        try JSONLevelDBStore<Value>(
+            path: path,
+            keyCodec: StringCodec(),
+            valueCodec: JSONCodec<Value>(),
+            options: options
+        )
+    }
+
+    public static func json<Value: Codable & Sendable>(
+        path: String,
+        valueType: Value.Type = Value.self,
+        openOptions: Database.OpenOptions
     ) throws -> JSONLevelDBStore<Value> {
         try JSONLevelDBStore<Value>(
             path: path,

@@ -20,6 +20,14 @@ let package = Package(
             name: "swift-leveldb-zstd",
             targets: ["LevelDBZstd"]
         ),
+        .executable(
+            name: "swift-leveldb-bench",
+            targets: ["SwiftLevelDBBench"]
+        ),
+        .executable(
+            name: "leveldb-db-bench",
+            targets: ["LevelDBDBBench"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
@@ -150,6 +158,35 @@ let package = Package(
                 .product(name: "libzstd", package: "zstd"),
             ]
         ),
+        .target(
+            name: "SwiftLevelDBBenchCore",
+            dependencies: [
+                "LevelDBTyped",
+                "LevelDBZstd",
+                "swift-leveldb",
+            ]
+        ),
+        .executableTarget(
+            name: "SwiftLevelDBBench",
+            dependencies: ["SwiftLevelDBBenchCore"],
+            path: "Benchmarks/SwiftLevelDBBench"
+        ),
+        .executableTarget(
+            name: "LevelDBDBBench",
+            dependencies: ["CLevelDB"],
+            path: ".",
+            sources: [
+                "Vendor/leveldb/benchmarks/db_bench.cc",
+                "Vendor/leveldb/util/histogram.cc",
+                "Benchmarks/LevelDBDBBenchShim/testutil.cc",
+            ],
+            cxxSettings: [
+                .define("LEVELDB_PLATFORM_POSIX", to: "1"),
+                .headerSearchPath("Benchmarks/LevelDBDBBenchShim"),
+                .headerSearchPath("Vendor/leveldb"),
+                .headerSearchPath("Vendor/leveldb/include"),
+            ]
+        ),
         .testTarget(
             name: "swift-leveldbTests",
             dependencies: ["swift-leveldb"]
@@ -161,6 +198,10 @@ let package = Package(
         .testTarget(
             name: "LevelDBZstdTests",
             dependencies: ["LevelDBZstd"]
+        ),
+        .testTarget(
+            name: "SwiftLevelDBBenchCoreTests",
+            dependencies: ["SwiftLevelDBBenchCore"]
         ),
     ],
     swiftLanguageModes: [.v6],

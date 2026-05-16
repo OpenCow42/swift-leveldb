@@ -155,6 +155,8 @@ import Testing
     }
 
     try iterator.checkError()
+    #expect(iterator.key == nil)
+    #expect(iterator.value == nil)
 }
 
 @Test func snapshotReadSeesValueFromCreationTime() throws {

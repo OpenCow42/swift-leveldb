@@ -93,28 +93,20 @@ public final class WriteBatch {
             handle,
             retainedState.toOpaque(),
             { statePointer, keyPointer, keyCount, valuePointer, valueCount in
-                guard let statePointer, let keyPointer, let valuePointer else {
-                    return
-                }
-
                 let state = Unmanaged<WriteBatchIterationState>
-                    .fromOpaque(statePointer)
+                    .fromOpaque(statePointer!)
                     .takeUnretainedValue()
                 state.operations.append(.put(
-                    key: Data(bytes: keyPointer, count: keyCount),
-                    value: Data(bytes: valuePointer, count: valueCount)
+                    key: Data(bytes: keyPointer!, count: keyCount),
+                    value: Data(bytes: valuePointer!, count: valueCount)
                 ))
             },
             { statePointer, keyPointer, keyCount in
-                guard let statePointer, let keyPointer else {
-                    return
-                }
-
                 let state = Unmanaged<WriteBatchIterationState>
-                    .fromOpaque(statePointer)
+                    .fromOpaque(statePointer!)
                     .takeUnretainedValue()
                 state.operations.append(.delete(
-                    key: Data(bytes: keyPointer, count: keyCount)
+                    key: Data(bytes: keyPointer!, count: keyCount)
                 ))
             }
         )
@@ -252,22 +244,25 @@ public final class Database {
         }
 
         public func testDirectory() -> String? {
-            let directory = leveldb_env_get_test_directory(handle)
-            defer {
-                if let directory {
-                    leveldb_free(directory)
-                }
-            }
-
-            guard let directory else {
-                return nil
-            }
-
-            return String(cString: directory)
+            Self.stringAndFree(leveldb_env_get_test_directory(handle))
         }
 
         public static func == (lhs: Environment, rhs: Environment) -> Bool {
             lhs === rhs
+        }
+
+        private static func stringAndFree(_ value: UnsafeMutablePointer<CChar>?) -> String? {
+            defer {
+                if let value {
+                    leveldb_free(value)
+                }
+            }
+
+            guard let value else {
+                return nil
+            }
+
+            return String(cString: value)
         }
     }
 
@@ -293,23 +288,19 @@ public final class Database {
             name: String,
             compare: @escaping @Sendable (Data, Data) -> ComparisonResult
         ) -> Comparator {
-            precondition(!name.isEmpty, "LevelDB comparator names must be stable and non-empty.")
-
             let state = ComparatorState(name: name, compare: compare)
             let retainedState = Unmanaged.passRetained(state)
             let handle = leveldb_comparator_create(
                 retainedState.toOpaque(),
                 { statePointer in
-                    guard let statePointer else { return }
-                    Unmanaged<ComparatorState>.fromOpaque(statePointer).release()
+                    Unmanaged<ComparatorState>.fromOpaque(statePointer!).release()
                 },
                 { statePointer, lhsPointer, lhsCount, rhsPointer, rhsCount in
-                    guard let statePointer else { return 0 }
                     let state = Unmanaged<ComparatorState>
-                        .fromOpaque(statePointer)
+                        .fromOpaque(statePointer!)
                         .takeUnretainedValue()
-                    let lhs = lhsPointer.map { Data(bytes: $0, count: lhsCount) } ?? Data()
-                    let rhs = rhsPointer.map { Data(bytes: $0, count: rhsCount) } ?? Data()
+                    let lhs = Data(bytes: lhsPointer!, count: lhsCount)
+                    let rhs = Data(bytes: rhsPointer!, count: rhsCount)
 
                     switch state.compare(lhs, rhs) {
                     case .orderedAscending:
@@ -321,9 +312,8 @@ public final class Database {
                     }
                 },
                 { statePointer in
-                    guard let statePointer else { return nil }
                     let state = Unmanaged<ComparatorState>
-                        .fromOpaque(statePointer)
+                        .fromOpaque(statePointer!)
                         .takeUnretainedValue()
                     return UnsafePointer(state.namePointer)
                 }
@@ -399,8 +389,6 @@ public final class Database {
             createFilter: @escaping @Sendable ([Data]) -> Data,
             keyMayMatch: @escaping @Sendable (_ key: Data, _ filter: Data) -> Bool
         ) -> FilterPolicy {
-            precondition(!name.isEmpty, "LevelDB filter policy names must be stable and non-empty.")
-
             let state = FilterPolicyState(
                 name: name,
                 createFilter: createFilter,
@@ -410,26 +398,15 @@ public final class Database {
             let handle = leveldb_filterpolicy_create(
                 retainedState.toOpaque(),
                 { statePointer in
-                    guard let statePointer else { return }
-                    Unmanaged<FilterPolicyState>.fromOpaque(statePointer).release()
+                    Unmanaged<FilterPolicyState>.fromOpaque(statePointer!).release()
                 },
                 { statePointer, keyArray, keyLengthArray, keyCount, filterLengthPointer in
-                    guard let statePointer else {
-                        filterLengthPointer?.pointee = 0
-                        return malloc(1)?.assumingMemoryBound(to: CChar.self)
-                    }
-
                     let state = Unmanaged<FilterPolicyState>
-                        .fromOpaque(statePointer)
+                        .fromOpaque(statePointer!)
                         .takeUnretainedValue()
-                    let keys: [Data]
-                    if let keyArray, let keyLengthArray, keyCount > 0 {
-                        keys = (0..<Int(keyCount)).map { index in
-                            let count = keyLengthArray[index]
-                            return keyArray[index].map { Data(bytes: $0, count: count) } ?? Data()
-                        }
-                    } else {
-                        keys = []
+                    let keys = (0..<Int(keyCount)).map { index in
+                        let count = keyLengthArray![index]
+                        return Data(bytes: keyArray![index]!, count: count)
                     }
 
                     let filter = state.createFilter(keys)
@@ -448,18 +425,16 @@ public final class Database {
                     return pointer
                 },
                 { statePointer, keyPointer, keyCount, filterPointer, filterCount in
-                    guard let statePointer else { return 1 }
                     let state = Unmanaged<FilterPolicyState>
-                        .fromOpaque(statePointer)
+                        .fromOpaque(statePointer!)
                         .takeUnretainedValue()
-                    let key = keyPointer.map { Data(bytes: $0, count: keyCount) } ?? Data()
-                    let filter = filterPointer.map { Data(bytes: $0, count: filterCount) } ?? Data()
+                    let key = Data(bytes: keyPointer!, count: keyCount)
+                    let filter = Data(bytes: filterPointer!, count: filterCount)
                     return state.keyMayMatch(key, filter).levelDBBool
                 },
                 { statePointer in
-                    guard let statePointer else { return nil }
                     let state = Unmanaged<FilterPolicyState>
-                        .fromOpaque(statePointer)
+                        .fromOpaque(statePointer!)
                         .takeUnretainedValue()
                     return UnsafePointer(state.namePointer)
                 }
@@ -558,9 +533,7 @@ public final class Database {
             guard isValid else { return nil }
 
             var keyCount = 0
-            guard let key = leveldb_iter_key(handle, &keyCount) else {
-                return nil
-            }
+            let key = leveldb_iter_key(handle, &keyCount)!
 
             return Data(bytes: key, count: keyCount)
         }
@@ -569,9 +542,7 @@ public final class Database {
             guard isValid else { return nil }
 
             var valueCount = 0
-            guard let value = leveldb_iter_value(handle, &valueCount) else {
-                return nil
-            }
+            let value = leveldb_iter_value(handle, &valueCount)!
 
             return Data(bytes: value, count: valueCount)
         }
@@ -606,9 +577,7 @@ public final class Database {
             var error: UnsafeMutablePointer<CChar>?
             leveldb_iter_get_error(handle, &error)
 
-            if let error {
-                throw LevelDBError.operationFailed(Database.consume(error))
-            }
+            try Database.throwIfOperationFailed(error)
         }
     }
 
@@ -631,15 +600,9 @@ public final class Database {
             leveldb_open(rawOptions.handle, pathPointer, &error)
         }
 
-        if let error {
-            throw LevelDBError.openFailed(Self.consume(error))
-        }
+        try Self.throwIfOpenFailed(error)
 
-        guard let database else {
-            throw LevelDBError.openFailed("LevelDB did not return a database handle.")
-        }
-
-        handle = database
+        handle = try Self.unwrapOpenedDatabase(database)
         openOptionResources = rawOptions.resources
     }
 
@@ -656,9 +619,7 @@ public final class Database {
         var error: UnsafeMutablePointer<CChar>?
         leveldb_write(handle, rawOptions, batch.handle, &error)
 
-        if let error {
-            throw LevelDBError.operationFailed(Self.consume(error))
-        }
+        try Self.throwIfOperationFailed(error)
     }
 
     public func write(
@@ -695,9 +656,7 @@ public final class Database {
             }
         }
 
-        if let error {
-            throw LevelDBError.operationFailed(Self.consume(error))
-        }
+        try Self.throwIfOperationFailed(error)
     }
 
     public func put(_ value: String, forKey key: String, sync: Bool = false) throws {
@@ -723,9 +682,7 @@ public final class Database {
             }
         }
 
-        if let error {
-            throw LevelDBError.operationFailed(Self.consume(error))
-        }
+        try Self.throwIfOperationFailed(error)
 
         guard let value else {
             return nil
@@ -761,9 +718,7 @@ public final class Database {
             leveldb_delete(handle, rawOptions, keyPointer, keyCount, &error)
         }
 
-        if let error {
-            throw LevelDBError.operationFailed(Self.consume(error))
-        }
+        try Self.throwIfOperationFailed(error)
     }
 
     public func deleteValue(forKey key: String, sync: Bool = false) throws {
@@ -872,9 +827,7 @@ public final class Database {
             leveldb_destroy_db(rawOptions.handle, pathPointer, &error)
         }
 
-        if let error {
-            throw LevelDBError.operationFailed(consume(error))
-        }
+        try throwIfOperationFailed(error)
     }
 
     public static func repair(path: String, options: OpenOptions = .default) throws {
@@ -886,9 +839,7 @@ public final class Database {
             leveldb_repair_db(rawOptions.handle, pathPointer, &error)
         }
 
-        if let error {
-            throw LevelDBError.operationFailed(consume(error))
-        }
+        try throwIfOperationFailed(error)
     }
 
     private static func makeOpenOptions(_ options: OpenOptions) -> (handle: OpaquePointer, resources: [AnyObject]) {
@@ -953,6 +904,25 @@ public final class Database {
         return message
     }
 
+    private static func throwIfOpenFailed(_ error: UnsafeMutablePointer<CChar>?) throws {
+        if let error {
+            throw LevelDBError.openFailed(consume(error))
+        }
+    }
+
+    private static func throwIfOperationFailed(_ error: UnsafeMutablePointer<CChar>?) throws {
+        if let error {
+            throw LevelDBError.operationFailed(consume(error))
+        }
+    }
+
+    private static func unwrapOpenedDatabase(_ database: OpaquePointer?) throws -> OpaquePointer {
+        guard let database else {
+            throw LevelDBError.openFailed("LevelDB did not return a database handle.")
+        }
+        return database
+    }
+
     private static func copyLevelDBBytes(_ data: Data) -> (pointer: UnsafeMutablePointer<CChar>, count: Int) {
         let count = data.count
         let pointer = UnsafeMutablePointer<CChar>.allocate(capacity: max(count, 1))
@@ -980,6 +950,28 @@ public final class Database {
         return try data.withLevelDBBytes(body)
     }
 }
+
+#if DEBUG
+extension Database {
+    static func _testingThrowOpenFailed(_ message: String?) throws {
+        try throwIfOpenFailed(message.flatMap { strdup($0) })
+    }
+
+    static func _testingThrowOperationFailed(_ message: String?) throws {
+        try throwIfOperationFailed(message.flatMap { strdup($0) })
+    }
+
+    static func _testingUnwrapOpenResult(_ database: OpaquePointer?) throws {
+        _ = try unwrapOpenedDatabase(database)
+    }
+}
+
+extension Database.Environment {
+    static func _testingStringAndFreeNil() -> String? {
+        stringAndFree(nil)
+    }
+}
+#endif
 
 private extension Bool {
     var levelDBBool: UInt8 {

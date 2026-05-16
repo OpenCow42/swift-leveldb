@@ -59,9 +59,7 @@ public struct ZstdCodec<Base: LevelDBCodec>: LevelDBCodec {
             }
         }
 
-        if ZSTD_isError(written) != 0 {
-            throw ZstdCodecError.compressionFailed(errorName(for: written))
-        }
+        try checkCompressionResult(written)
 
         output.removeSubrange(written..<output.count)
         return output
@@ -72,6 +70,30 @@ public struct ZstdCodec<Base: LevelDBCodec>: LevelDBCodec {
             ZSTD_getFrameContentSize(inputBuffer.baseAddress, inputBuffer.count)
         }
 
+        var output = Data(count: try decompressedSize(from: contentSize))
+        let read = output.withUnsafeMutableBytes { outputBuffer in
+            data.withUnsafeBytes { inputBuffer in
+                ZSTD_decompress(
+                    outputBuffer.baseAddress,
+                    outputBuffer.count,
+                    inputBuffer.baseAddress,
+                    inputBuffer.count
+                )
+            }
+        }
+
+        try checkDecompressionResult(read)
+
+        return output
+    }
+
+    private static func checkCompressionResult(_ code: Int) throws {
+        if ZSTD_isError(code) != 0 {
+            throw ZstdCodecError.compressionFailed(errorName(for: code))
+        }
+    }
+
+    private static func decompressedSize(from contentSize: UInt64) throws -> Int {
         if contentSize == ZSTD_CONTENTSIZE_ERROR {
             throw ZstdCodecError.decompressionFailed("Input is not a valid ZSTD frame.")
         }
@@ -84,30 +106,44 @@ public struct ZstdCodec<Base: LevelDBCodec>: LevelDBCodec {
             throw ZstdCodecError.contentSizeTooLarge(contentSize)
         }
 
-        var output = Data(count: Int(contentSize))
-        let read = output.withUnsafeMutableBytes { outputBuffer in
-            data.withUnsafeBytes { inputBuffer in
-                ZSTD_decompress(
-                    outputBuffer.baseAddress,
-                    outputBuffer.count,
-                    inputBuffer.baseAddress,
-                    inputBuffer.count
-                )
-            }
-        }
+        return Int(contentSize)
+    }
 
-        if ZSTD_isError(read) != 0 {
-            throw ZstdCodecError.decompressionFailed(errorName(for: read))
+    private static func checkDecompressionResult(_ code: Int) throws {
+        if ZSTD_isError(code) != 0 {
+            throw ZstdCodecError.decompressionFailed(errorName(for: code))
         }
-
-        return output
     }
 
     private static func errorName(for code: Int) -> String {
-        guard let name = ZSTD_getErrorName(code) else {
+        errorName(from: ZSTD_getErrorName(code), code: code)
+    }
+
+    private static func errorName(from name: UnsafePointer<CChar>?, code: Int) -> String {
+        guard let name else {
             return "Unknown error code \(code)."
         }
 
         return String(cString: name)
     }
 }
+
+#if DEBUG
+extension ZstdCodec {
+    static func _testingCheckCompressionResult(_ code: Int) throws {
+        try checkCompressionResult(code)
+    }
+
+    static func _testingDecompressedSize(from contentSize: UInt64) throws -> Int {
+        try decompressedSize(from: contentSize)
+    }
+
+    static func _testingCheckDecompressionResult(_ code: Int) throws {
+        try checkDecompressionResult(code)
+    }
+
+    static func _testingUnknownErrorName(code: Int) -> String {
+        errorName(from: nil, code: code)
+    }
+}
+#endif

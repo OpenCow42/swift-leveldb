@@ -28,8 +28,8 @@ the upstream project.
 
 ## Quality Bar
 
-Every meaningful change should be tested. The project should maintain greater
-than 90% test coverage, with tests that exercise Swift-facing behavior and the
+Every meaningful change should be tested. The project should maintain 100%
+Swift library line coverage, with tests that exercise Swift-facing behavior and the
 interop boundary where relevant.
 
 `swift test` is the baseline check for all changes. A change is not ready until
