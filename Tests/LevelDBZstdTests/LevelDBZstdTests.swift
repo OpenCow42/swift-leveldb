@@ -73,6 +73,31 @@ private struct Event: Codable, Equatable, Sendable {
     #expect(try await store.value(forKey: "record:event:42") == event)
 }
 
+@Test func adaptiveZstdCodecWorksInTypedStore() async throws {
+    let directory = temporaryDatabaseDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = try LevelDBStore(
+        path: directory.path,
+        keyCodec: StringCodec(),
+        valueCodec: ZstdCodec(
+            wrapping: JSONCodec<Event>(),
+            storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.10)
+        )
+    )
+
+    let event = Event(
+        id: 99,
+        payload: String(repeating: "adaptive ", count: 256)
+    )
+
+    try await store.put(event, forKey: "events/99")
+
+    #expect(try await store.value(forKey: "events/99") == event)
+}
+
 private func temporaryDatabaseDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("swift-leveldb-\(UUID().uuidString)")

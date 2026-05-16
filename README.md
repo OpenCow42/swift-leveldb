@@ -130,6 +130,27 @@ let user = try await users.value(forKey: "users/1")
 serialization, so the same wrapper can be used with JSON, Protobuf, raw `Data`,
 or a custom binary codec.
 
+By default, `ZstdCodec` uses ZSTD level 3 with adaptive storage. This is
+inspired by ZFS's ZSTD block-compression policy: try compression, but store the
+raw payload when compression does not provide enough benefit. The default stores
+compressed bytes only when the compressed payload saves at least 10% compared
+with the original encoded bytes:
+
+```swift
+let codec = ZstdCodec(
+    wrapping: JSONCodec<User>(),
+    compressionLevel: 3,
+    storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.10)
+)
+```
+
+Adjust `minimumCompressionSavingsRatio` when you want a different storage/read
+tradeoff. `0.0` only rejects compressed payloads that are larger than the raw
+encoded bytes, while higher values require a larger storage win. Thresholds are
+clamped to `0...1`. The decoder still reads legacy values written as plain ZSTD
+frames, and `.alwaysCompress` remains available when that exact storage shape is
+desired.
+
 ### Atomic Records And Indexes
 
 Use write batches to commit a compressed record and its index entries together:

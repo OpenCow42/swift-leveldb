@@ -8,6 +8,7 @@ import Testing
     #expect(ZstdCodecError.decompressionFailed("bad").description == "ZSTD decompression failed: bad")
     #expect(ZstdCodecError.contentSizeUnavailable.description == "ZSTD frame does not report its decompressed size.")
     #expect(ZstdCodecError.contentSizeTooLarge(9).description == "ZSTD decompressed size is too large for this platform: 9.")
+    #expect(ZstdCodecError.invalidAdaptivePayload("bad").description == "Invalid adaptive ZSTD payload: bad")
 }
 
 @Test func zstdDecodeRejectsInvalidFrame() throws {
@@ -54,6 +55,131 @@ import Testing
     try ZstdCodec<DataCodec>._testingCheckDecompressionResult(0)
 
     #expect(ZstdCodec<DataCodec>._testingUnknownErrorName(code: 123) == "Unknown error code 123.")
+}
+
+@Test func zstdStorageStrategySavingsThresholdsAreExplicit() {
+    #expect(ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .alwaysCompress,
+        originalCount: 0,
+        compressedCount: 10
+    ))
+    #expect(!ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .adaptive(minimumCompressionSavingsRatio: 0.0),
+        originalCount: 0,
+        compressedCount: 0
+    ))
+    #expect(ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .adaptive(minimumCompressionSavingsRatio: 0.20),
+        originalCount: 100,
+        compressedCount: 70
+    ))
+    #expect(!ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .adaptive(minimumCompressionSavingsRatio: 0.31),
+        originalCount: 100,
+        compressedCount: 70
+    ))
+    #expect(ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .adaptive(minimumCompressionSavingsRatio: -1.0),
+        originalCount: 100,
+        compressedCount: 100
+    ))
+    #expect(!ZstdCodec<DataCodec>._testingShouldStoreCompressed(
+        strategy: .adaptive(minimumCompressionSavingsRatio: 2.0),
+        originalCount: 100,
+        compressedCount: 1
+    ))
+}
+
+@Test func zstdDefaultUsesReadBiasedAdaptiveStorageAtLevelThree() throws {
+    let codec = ZstdCodec(wrapping: DataCodec())
+    let payload = Data("small and not worth it".utf8)
+    let encoded = try codec.encode(payload)
+
+    #expect(codec.compressionLevel == 3)
+    #expect(codec.storageStrategy == .adaptive(minimumCompressionSavingsRatio: 0.10))
+    #expect(encoded == ZstdCodec<DataCodec>._testingAdaptivePayload(kind: 0, payload: payload))
+    #expect(try codec.decode(encoded) == payload)
+}
+
+@Test func zstdAdaptiveStoresCompressibleDataAsCompressedEnvelope() throws {
+    let payload = Data(repeating: 0x61, count: 4096)
+    let alwaysCompressed = try ZstdCodec(
+        wrapping: DataCodec(),
+        storageStrategy: .alwaysCompress
+    ).encode(payload)
+    let adaptive = ZstdCodec(
+        wrapping: DataCodec(),
+        storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.10)
+    )
+
+    let encoded = try adaptive.encode(payload)
+
+    #expect(encoded == ZstdCodec<DataCodec>._testingAdaptivePayload(kind: 1, payload: alwaysCompressed))
+    #expect(try adaptive.decode(encoded) == payload)
+}
+
+@Test func zstdAdaptiveStoresDataAsRawEnvelopeWhenSavingsAreBelowThreshold() throws {
+    let payload = Data("small and not worth it".utf8)
+    let adaptive = ZstdCodec(
+        wrapping: DataCodec(),
+        storageStrategy: .adaptive(minimumCompressionSavingsRatio: 1.0)
+    )
+
+    let encoded = try adaptive.encode(payload)
+
+    #expect(encoded == ZstdCodec<DataCodec>._testingAdaptivePayload(kind: 0, payload: payload))
+    #expect(try adaptive.decode(encoded) == payload)
+}
+
+@Test func zstdAdaptiveStoresEmptyPayloadAsRawEnvelope() throws {
+    let adaptive = ZstdCodec(
+        wrapping: DataCodec(),
+        storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.0)
+    )
+
+    let encoded = try adaptive.encode(Data())
+
+    #expect(encoded == ZstdCodec<DataCodec>._testingAdaptivePayload(kind: 0, payload: Data()))
+    #expect(try adaptive.decode(encoded) == Data())
+}
+
+@Test func zstdAdaptiveDecoderReadsLegacyCompressedFrames() throws {
+    let legacy = ZstdCodec(
+        wrapping: StringCodec(),
+        storageStrategy: .alwaysCompress
+    )
+    let adaptive = ZstdCodec(
+        wrapping: StringCodec(),
+        storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.25)
+    )
+    let encoded = try legacy.encode("legacy payload")
+
+    #expect(try adaptive.decode(encoded) == "legacy payload")
+}
+
+@Test func zstdAdaptiveDecoderRejectsMalformedEnvelope() throws {
+    let codec = ZstdCodec(wrapping: DataCodec(), storageStrategy: .adaptive(minimumCompressionSavingsRatio: 0.0))
+
+    do {
+        _ = try codec.decode(ZstdCodec<DataCodec>._testingIncompleteAdaptiveEnvelope())
+        Issue.record("Expected incomplete adaptive envelope to fail")
+    } catch ZstdCodecError.invalidAdaptivePayload(let message) {
+        #expect(message == "Envelope header is incomplete.")
+    }
+
+    do {
+        _ = try codec.decode(ZstdCodec<DataCodec>._testingAdaptivePayload(version: 2, kind: 0, payload: Data()))
+        Issue.record("Expected unsupported adaptive envelope version to fail")
+    } catch ZstdCodecError.invalidAdaptivePayload(let message) {
+        #expect(message == "Unsupported envelope version 2.")
+    }
+
+    do {
+        _ = try codec.decode(ZstdCodec<DataCodec>._testingAdaptivePayload(kind: 9, payload: Data()))
+        Issue.record("Expected unknown adaptive envelope tag to fail")
+    } catch ZstdCodecError.invalidAdaptivePayload(let message) {
+        #expect(message == "Unknown storage tag 9.")
+    }
 }
 
 @Test func zstdRandomRoundTripsRawData() throws {
